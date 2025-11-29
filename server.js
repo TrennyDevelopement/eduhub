@@ -23,7 +23,7 @@ app.options('*', cors());
 app.use(express.json());
 
 // MongoDB Connection
-const MONGODB_URI = 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/?appName=trennydev';
+const MONGODB_URI = 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/trennydev?retryWrites=true&w=majority';
 
 const client = new MongoClient(MONGODB_URI, {
     useNewUrlParser: true,
