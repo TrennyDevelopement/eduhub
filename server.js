@@ -23,15 +23,38 @@ app.use(cors({
 app.options('*', cors());
 app.use(express.json());
 
-// MongoDB connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/eduhub_school?retryWrites=true&w=majority';
+// ✅ YOUR EXACT MONGODB URI
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 
-mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-})
-.then(() => console.log('✅ MongoDB connected successfully'))
-.catch(err => console.error('❌ MongoDB connection error:', err));
+// Improved MongoDB connection with retry logic
+const connectWithRetry = async () => {
+    try {
+        console.log('🔄 Connecting to MongoDB...');
+        
+        await mongoose.connect(MONGODB_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            serverSelectionTimeoutMS: 30000, // 30 seconds
+            socketTimeoutMS: 45000, // 45 seconds
+            maxPoolSize: 10,
+            retryWrites: true,
+            w: 'majority'
+        });
+        
+        console.log('✅ MongoDB connected successfully');
+        console.log('📊 Database:', mongoose.connection.db.databaseName);
+        
+        // Initialize data after successful connection
+        await initializeDefaultData();
+    } catch (error) {
+        console.error('❌ MongoDB connection failed:', error.message);
+        console.log('🔄 Retrying connection in 5 seconds...');
+        setTimeout(connectWithRetry, 5000);
+    }
+};
+
+// Start the connection
+connectWithRetry();
 
 // Database Schemas
 const UserSchema = new mongoose.Schema({
@@ -184,9 +207,17 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// Initialize Default Data
+// Initialize Default Data - WITH ERROR HANDLING
 const initializeDefaultData = async () => {
     try {
+        console.log('🔄 Checking for default data...');
+        
+        // Wait for mongoose connection to be ready
+        if (mongoose.connection.readyState !== 1) {
+            console.log('⏳ Waiting for database connection...');
+            return;
+        }
+
         const adminExists = await User.findOne({ email: 'admin@eduhub.com' });
         if (!adminExists) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -197,32 +228,38 @@ const initializeDefaultData = async () => {
                 role: 'admin',
                 phone: '9876543210'
             });
+            console.log('✅ Default admin user created');
+        } else {
+            console.log('✅ Admin user already exists');
         }
 
-        const studentExists = await Student.findOne({ email: 'student@kv.edu' });
-        if (!studentExists) {
-            await Student.create({
-                admissionNo: 'KV2023001',
-                firstName: 'Aarav',
-                lastName: 'Sharma',
-                class: '11',
-                section: 'A',
-                rollNo: 1,
-                parentName: 'Rajesh Sharma',
-                parentContact: '9876543210',
-                email: 'student@kv.edu'
-            });
-        }
-
-        console.log('✅ Default data initialized');
+        console.log('✅ Default data initialization completed');
     } catch (error) {
-        console.error('Error initializing data:', error);
+        console.error('❌ Error initializing data:', error.message);
     }
 };
+
+// Health check that works even if DB is not connected
+app.get('/api/health', (req, res) => {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    
+    res.json({ 
+        status: 'OK', 
+        message: 'EduHub Backend is running!',
+        database: dbStatus,
+        timestamp: new Date().toISOString(),
+        version: '1.0.0'
+    });
+});
 
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
     try {
+        // Check if DB is connected
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected. Please try again.' });
+        }
+
         const { email, password, name, role, phone, subject, classes, class: userClass, section, rollNo, parentName, parentContact, childId } = req.body;
 
         const existingUser = await User.findOne({ email });
@@ -280,6 +317,11 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
     try {
+        // Check if DB is connected
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected. Please try again.' });
+        }
+
         const { email, password } = req.body;
 
         const user = await User.findOne({ email });
@@ -322,6 +364,9 @@ app.post('/api/auth/login', async (req, res) => {
 // Student Routes
 app.get('/api/students', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
         const students = await Student.find();
         res.json(students);
     } catch (error) {
@@ -331,6 +376,10 @@ app.get('/api/students', authenticateToken, async (req, res) => {
 
 app.post('/api/students', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
         const { firstName, lastName, class: studentClass, section, rollNo, admissionNo, email, parentName, parentContact } = req.body;
 
         const studentData = {
@@ -371,6 +420,9 @@ app.post('/api/students', authenticateToken, async (req, res) => {
 // Teacher Routes
 app.get('/api/teachers', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
         const teachers = await Teacher.find();
         res.json(teachers);
     } catch (error) {
@@ -380,6 +432,10 @@ app.get('/api/teachers', authenticateToken, async (req, res) => {
 
 app.post('/api/teachers', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
         const { name, email, subject, classes, contact } = req.body;
 
         const teacherData = {
@@ -413,6 +469,9 @@ app.post('/api/teachers', authenticateToken, async (req, res) => {
 // Course Routes
 app.get('/api/courses', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
         const courses = await Course.find();
         res.json(courses);
     } catch (error) {
@@ -422,6 +481,10 @@ app.get('/api/courses', authenticateToken, async (req, res) => {
 
 app.post('/api/courses', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
         const { title, subject, class: courseClass, description, teacher, youtubeUrl } = req.body;
 
         const courseData = {
@@ -442,264 +505,16 @@ app.post('/api/courses', authenticateToken, async (req, res) => {
     }
 });
 
-// Attendance Routes
-app.get('/api/attendance', authenticateToken, async (req, res) => {
-    try {
-        const attendance = await Attendance.find();
-        res.json(attendance);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/attendance', authenticateToken, async (req, res) => {
-    try {
-        const { date, class: attendanceClass, students } = req.body;
-
-        const attendanceData = {
-            date,
-            class: attendanceClass,
-            students
-        };
-
-        const attendance = new Attendance(attendanceData);
-        await attendance.save();
-
-        res.status(201).json({ message: 'Attendance recorded successfully', attendance });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Results Routes
-app.get('/api/results', authenticateToken, async (req, res) => {
-    try {
-        const results = await Result.find();
-        res.json(results);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/results', authenticateToken, async (req, res) => {
-    try {
-        const { studentId, examType, subject, marks, totalMarks, grade, class: resultClass, driveLink } = req.body;
-
-        const resultData = {
-            studentId,
-            examType,
-            subject,
-            marks,
-            totalMarks,
-            grade,
-            class: resultClass,
-            driveLink
-        };
-
-        const result = new Result(resultData);
-        await result.save();
-
-        res.status(201).json({ message: 'Result saved successfully', result });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Announcement Routes
-app.get('/api/announcements', authenticateToken, async (req, res) => {
-    try {
-        const announcements = await Announcement.find();
-        res.json(announcements);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/announcements', authenticateToken, async (req, res) => {
-    try {
-        const { title, content, audience, priority } = req.body;
-
-        const announcementData = {
-            title,
-            content,
-            audience,
-            priority,
-            createdBy: req.user.userId
-        };
-
-        const announcement = new Announcement(announcementData);
-        await announcement.save();
-
-        res.status(201).json({ message: 'Announcement created successfully', announcement });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Resource Routes
-app.get('/api/resources', authenticateToken, async (req, res) => {
-    try {
-        const resources = await Resource.find();
-        res.json(resources);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/resources', authenticateToken, async (req, res) => {
-    try {
-        const { type, title, content, subject, class: resourceClass } = req.body;
-
-        const resourceData = {
-            type,
-            title,
-            content,
-            subject,
-            class: resourceClass,
-            createdBy: req.user.userId
-        };
-
-        const resource = new Resource(resourceData);
-        await resource.save();
-
-        res.status(201).json({ message: 'Resource created successfully', resource });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Flashcard Routes
-app.get('/api/flashcards', authenticateToken, async (req, res) => {
-    try {
-        const flashcards = await Flashcard.find({ createdBy: req.user.userId });
-        res.json(flashcards);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/flashcards', authenticateToken, async (req, res) => {
-    try {
-        const { question, answer } = req.body;
-
-        const flashcardData = {
-            question,
-            answer,
-            createdBy: req.user.userId
-        };
-
-        const flashcard = new Flashcard(flashcardData);
-        await flashcard.save();
-
-        res.status(201).json({ message: 'Flashcard created successfully', flashcard });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Note Routes
-app.get('/api/notes', authenticateToken, async (req, res) => {
-    try {
-        const notes = await Note.find({ createdBy: req.user.userId });
-        res.json(notes);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/notes', authenticateToken, async (req, res) => {
-    try {
-        const { content } = req.body;
-
-        const noteData = {
-            content,
-            createdBy: req.user.userId
-        };
-
-        const note = new Note(noteData);
-        await note.save();
-
-        res.status(201).json({ message: 'Note created successfully', note });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/notes/:id', authenticateToken, async (req, res) => {
-    try {
-        await Note.findOneAndDelete({ _id: req.params.id, createdBy: req.user.userId });
-        res.json({ message: 'Note deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Study Time Routes
-app.get('/api/study-times', authenticateToken, async (req, res) => {
-    try {
-        const studyTimes = await StudyTime.find({ userId: req.user.userId });
-        res.json(studyTimes);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/study-times', authenticateToken, async (req, res) => {
-    try {
-        const { minutes } = req.body;
-
-        const studyTimeData = {
-            userId: req.user.userId,
-            minutes
-        };
-
-        const studyTime = new StudyTime(studyTimeData);
-        await studyTime.save();
-
-        res.status(201).json({ message: 'Study time updated successfully', studyTime });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Video Routes
-app.get('/api/videos', authenticateToken, async (req, res) => {
-    try {
-        const videos = await Video.find();
-        res.json(videos);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/videos', authenticateToken, async (req, res) => {
-    try {
-        const { courseId, title, description, youtubeId, order } = req.body;
-
-        const videoData = {
-            courseId,
-            title,
-            description,
-            youtubeId,
-            order
-        };
-
-        const video = new Video(videoData);
-        await video.save();
-
-        res.status(201).json({ message: 'Video added successfully', video });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // Dashboard Stats
 app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
         const totalStudents = await Student.countDocuments();
         const totalTeachers = await Teacher.countDocuments();
         const totalCourses = await Course.countDocuments();
-        const totalAttendance = await Attendance.countDocuments();
         
         res.json({
             totalStudents,
@@ -713,46 +528,29 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     }
 });
 
-// Health Check
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        message: 'EduHub Backend is running!',
-        timestamp: new Date().toISOString(),
-        version: '1.0.0'
-    });
-});
-
 // Root Endpoint
 app.get('/', (req, res) => {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    
     res.json({ 
         message: 'EduHub School Management System API',
         version: '1.0.0',
+        database: dbStatus,
         endpoints: {
+            health: 'GET /api/health',
             auth: ['POST /api/auth/login', 'POST /api/auth/register'],
             students: ['GET /api/students', 'POST /api/students'],
             teachers: ['GET /api/teachers', 'POST /api/teachers'],
             courses: ['GET /api/courses', 'POST /api/courses'],
-            attendance: ['GET /api/attendance', 'POST /api/attendance'],
-            results: ['GET /api/results', 'POST /api/results'],
-            announcements: ['GET /api/announcements', 'POST /api/announcements'],
-            resources: ['GET /api/resources', 'POST /api/resources'],
-            flashcards: ['GET /api/flashcards', 'POST /api/flashcards'],
-            notes: ['GET /api/notes', 'POST /api/notes', 'DELETE /api/notes/:id'],
-            study_times: ['GET /api/study-times', 'POST /api/study-times'],
-            videos: ['GET /api/videos', 'POST /api/videos'],
-            dashboard: ['GET /api/dashboard/stats'],
-            health: ['GET /api/health']
+            dashboard: 'GET /api/dashboard/stats'
         }
     });
 });
 
 // Start Server
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
     console.log(`🚀 EduHub Backend running on port ${PORT}`);
     console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
     console.log(`🌐 API Root: http://localhost:${PORT}/`);
-    
-    await initializeDefaultData();
 });
