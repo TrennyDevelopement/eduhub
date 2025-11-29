@@ -24,7 +24,7 @@ app.options('*', cors());
 app.use(express.json());
 
 // ✅ YOUR EXACT MONGODB URI
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+const MONGODB_URI = 'mongodb+srv://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 
 // Improved MongoDB connection with retry logic
 const connectWithRetry = async () => {
