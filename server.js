@@ -23,38 +23,69 @@ app.use(cors({
 app.options('*', cors());
 app.use(express.json());
 
-// ✅ YOUR EXACT MONGODB URI
-const MONGODB_URI = 'mongodb+srv://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+// ✅ MULTIPLE MONGODB URI OPTIONS
+const MONGODB_URIS = [
+    // Option 1: Direct connection without SRV
+    'mongodb://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net:27017/eduhub_school?retryWrites=true&w=majority&ssl=true',
+    
+    // Option 2: Standard connection
+    'mongodb://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/eduhub_school?retryWrites=true&w=majority&ssl=true',
+    
+    // Option 3: Your original URI (will fail but we try anyway)
+    'mongodb+srv://trennydevelopement:trennyontop@cluster0.eprlndt.mongodb.net/eduhub_school?retryWrites=true&w=majority'
+];
 
-// Improved MongoDB connection with retry logic
-const connectWithRetry = async () => {
+let currentUriIndex = 0;
+
+// ✅ IMPROVED MONGODB CONNECTION WITH MULTIPLE STRATEGIES
+const connectWithRetry = async (uriIndex = 0) => {
+    if (uriIndex >= MONGODB_URIS.length) {
+        console.error('❌ All MongoDB connection attempts failed');
+        console.log('🔄 Will retry all URIs in 30 seconds...');
+        setTimeout(() => connectWithRetry(0), 30000);
+        return;
+    }
+
+    const currentUri = MONGODB_URIS[uriIndex];
+    
     try {
-        console.log('🔄 Connecting to MongoDB...');
+        console.log(`🔄 Attempting MongoDB connection (Attempt ${uriIndex + 1}/3)...`);
+        console.log(`📡 Using URI: ${currentUri.replace(/mongodb[+srv]*:\/\/([^:]+):([^@]+)@/, 'mongodb://***:***@')}`);
         
-        await mongoose.connect(MONGODB_URI, {
+        await mongoose.connect(currentUri, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
-            serverSelectionTimeoutMS: 30000, // 30 seconds
-            socketTimeoutMS: 45000, // 45 seconds
+            serverSelectionTimeoutMS: 15000, // 15 seconds
+            socketTimeoutMS: 45000,
             maxPoolSize: 10,
             retryWrites: true,
             w: 'majority'
         });
         
-        console.log('✅ MongoDB connected successfully');
-        console.log('📊 Database:', mongoose.connection.db.databaseName);
+        console.log('✅ MongoDB connected successfully!');
+        console.log('📊 Database:', mongoose.connection.db?.databaseName || 'Unknown');
+        console.log('🔗 Connection URI used:', MONGODB_URIS[currentUriIndex].replace(/mongodb[+srv]*:\/\/([^:]+):([^@]+)@/, 'mongodb://***:***@'));
         
         // Initialize data after successful connection
         await initializeDefaultData();
+        
     } catch (error) {
-        console.error('❌ MongoDB connection failed:', error.message);
-        console.log('🔄 Retrying connection in 5 seconds...');
-        setTimeout(connectWithRetry, 5000);
+        console.error(`❌ MongoDB connection failed (Attempt ${uriIndex + 1}/3):`, error.message);
+        
+        // Close any existing connection
+        if (mongoose.connection.readyState !== 0) {
+            await mongoose.connection.close();
+        }
+        
+        // Try next URI
+        console.log(`🔄 Trying next connection option in 3 seconds...`);
+        setTimeout(() => connectWithRetry(uriIndex + 1), 3000);
     }
 };
 
 // Start the connection
-connectWithRetry();
+connectWithRetry(0);
+
 
 // Database Schemas
 const UserSchema = new mongoose.Schema({
