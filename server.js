@@ -9,7 +9,8 @@ const app = express();
 const PORT = 5000;
 
 // Secure JWT Secret
-const JWT_SECRET = 'eduhub-' + Date.now() + '-' + Math.random().toString(36).substring(2, 15) + '-secure-key';
+   const JWT_SECRET = 'eduhub-school-management-system-2024-secure-key';
+
 
 // CORS configuration - ACCEPTS ANY FRONTEND URL
 app.use(cors({
