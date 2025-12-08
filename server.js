@@ -9,7 +9,15 @@ const PORT = process.env.PORT || 3000;
 // Store logs in memory (in production, you might want to use a logging service)
 const logs = [];
 const LOG_PASSWORD = process.env.LOG_PASSWORD || 'bunny';
+// Add this at the VERY BEGINNING of your file
+process.on('uncaughtException', (error) => {
+    console.error('💥 UNCAUGHT EXCEPTION:', error);
+    console.error(error.stack);
+});
 
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 UNHANDLED REJECTION at:', promise, 'reason:', reason);
+});
 // Add request logging middleware
 app.use((req, res, next) => {
     const start = Date.now();
