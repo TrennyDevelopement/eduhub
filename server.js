@@ -75,7 +75,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/eduhub_school?retryWrites=true&w=majority';;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/eduhub_school?retryWrites=true&w=majority';
 const client = new MongoClient(MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true
