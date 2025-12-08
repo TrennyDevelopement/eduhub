@@ -1,44 +1,57 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
-const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const UPLOAD_DIR = 'uploads';
 
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
+// Store logs in memory (in production, you might want to use a logging service)
+const logs = [];
+const LOG_PASSWORD = process.env.LOG_PASSWORD || 'bunny';
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, UPLOAD_DIR);
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
-    fileFilter: (req, file, cb) => {
-        const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|mp4|avi|mov|mp3|wav/;
-        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-        const mimetype = allowedTypes.test(file.mimetype);
+// Add request logging middleware
+app.use((req, res, next) => {
+    const start = Date.now();
+    const originalSend = res.send;
+    
+    // Store response data
+    let responseBody = '';
+    res.send = function(body) {
+        responseBody = body;
+        return originalSend.call(this, body);
+    };
+    
+    // Log after response is sent
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            method: req.method,
+            url: req.url,
+            ip: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('User-Agent'),
+            statusCode: res.statusCode,
+            duration: `${duration}ms`,
+            userEmail: req.headers['x-user-email'] || 'anonymous',
+            userRole: req.headers['x-user-role'] || 'guest',
+            requestBody: req.body ? JSON.stringify(req.body).substring(0, 500) : null,
+            responseBody: typeof responseBody === 'string' ? responseBody.substring(0, 500) : null,
+            memoryUsage: process.memoryUsage()
+        };
         
-        if (mimetype && extname) {
-            return cb(null, true);
-        } else {
-            cb(new Error('Only image, document, audio, and video files are allowed'));
+        logs.unshift(logEntry); // Add to beginning for reverse chronological order
+        
+        // Keep only last 1000 logs to prevent memory issues
+        if (logs.length > 1000) {
+            logs.pop();
         }
-    }
+        
+        // Console log for debugging
+        console.log(`[${logEntry.timestamp}] ${req.method} ${req.url} - ${res.statusCode} - ${duration}ms - User: ${logEntry.userEmail}`);
+    });
+    
+    next();
 });
 
 // Middleware - Allow ALL origins
@@ -50,12 +63,11 @@ app.use(cors({
 }));
 
 app.options('*', cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(UPLOAD_DIR));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // MongoDB Connection
-const MONGODB_URI = 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/';
 const client = new MongoClient(MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true
@@ -76,8 +88,24 @@ const connectToMongoDB = async () => {
         await initializeCollections();
         await initializeDefaultData();
         
+        // Add connection log
+        logs.unshift({
+            timestamp: new Date().toISOString(),
+            event: 'MongoDB Connection',
+            message: `Connected to database: ${dbName}`,
+            status: 'success'
+        });
+        
     } catch (error) {
         console.error('❌ MongoDB connection failed:', error.message);
+        logs.unshift({
+            timestamp: new Date().toISOString(),
+            event: 'MongoDB Connection',
+            message: `Connection failed: ${error.message}`,
+            status: 'error',
+            error: error.message
+        });
+        
         console.log('🔄 Retrying in 5 seconds...');
         setTimeout(connectToMongoDB, 5000);
     }
@@ -119,7 +147,7 @@ const initializeDefaultData = async () => {
                 name: 'System Administrator',
                 role: 'admin',
                 phone: '9876543210',
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/0088cc/ffffff?text=Admin',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -144,7 +172,7 @@ const initializeDefaultData = async () => {
                 parentContact: '9876543210',
                 email: 'student@kv.edu',
                 password: 'student123', // Plain text password
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/00aa55/ffffff?text=Student',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -156,7 +184,7 @@ const initializeDefaultData = async () => {
                 password: 'student123',
                 name: 'Aarav Sharma',
                 role: 'student',
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/00aa55/ffffff?text=Student',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -177,7 +205,7 @@ const initializeDefaultData = async () => {
                 classes: ['11-A', '12-A'],
                 contact: '9876543211',
                 password: 'teacher123', // Plain text password
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/aa5500/ffffff?text=Teacher',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -189,7 +217,7 @@ const initializeDefaultData = async () => {
                 password: 'teacher123',
                 name: 'Dr. Rajesh Kumar',
                 role: 'teacher',
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/aa5500/ffffff?text=Teacher',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -207,7 +235,7 @@ const initializeDefaultData = async () => {
                 phone: '9876543210',
                 occupation: 'Business',
                 children: ['student@kv.edu'],
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/5500aa/ffffff?text=Parent',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -219,7 +247,7 @@ const initializeDefaultData = async () => {
                 password: 'parent123',
                 name: 'Rajesh Sharma',
                 role: 'parent',
-                avatar: 'default-avatar.png',
+                avatar: 'https://via.placeholder.com/150/5500aa/ffffff?text=Parent',
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -272,6 +300,13 @@ const initializeDefaultData = async () => {
         console.log('✅ Default data initialization completed');
     } catch (error) {
         console.error('❌ Error initializing data:', error.message);
+        logs.unshift({
+            timestamp: new Date().toISOString(),
+            event: 'Default Data Initialization',
+            message: `Error: ${error.message}`,
+            status: 'error',
+            error: error.message
+        });
     }
 };
 
@@ -357,11 +392,65 @@ const authorizeRoles = (...allowedRoles) => {
     };
 };
 
+// ===== LOGS ENDPOINT (Password Protected) =====
+app.get('/api/logs', async (req, res) => {
+    try {
+        const { password, limit = 100, filter } = req.query;
+        
+        // Password protection
+        if (password !== LOG_PASSWORD) {
+            return res.status(401).json({ 
+                success: false,
+                error: 'Unauthorized: Invalid password' 
+            });
+        }
+        
+        let filteredLogs = [...logs];
+        
+        // Apply filters if provided
+        if (filter) {
+            filteredLogs = filteredLogs.filter(log => {
+                return JSON.stringify(log).toLowerCase().includes(filter.toLowerCase());
+            });
+        }
+        
+        // Limit the number of logs returned
+        const limitedLogs = filteredLogs.slice(0, parseInt(limit));
+        
+        // Get server statistics
+        const serverStats = {
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            nodeVersion: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            totalLogs: logs.length,
+            database: db ? 'connected' : 'disconnected',
+            currentDatabase: dbName,
+            timestamp: new Date().toISOString()
+        };
+        
+        res.json({
+            success: true,
+            logs: limitedLogs,
+            statistics: serverStats,
+            totalAvailableLogs: logs.length,
+            passwordValidated: true,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
 // ===== HEALTH CHECK =====
 app.get('/api/health', (req, res) => {
     const dbStatus = db ? 'connected' : 'disconnected';
     
-    res.json({ 
+    const healthData = { 
         success: true,
         status: 'OK', 
         message: 'EduHub School Management System API is running!',
@@ -370,12 +459,20 @@ app.get('/api/health', (req, res) => {
             name: dbName
         },
         deployment: {
-            url: 'https://eduhub-production-3279.up.railway.app/',
+            url: process.env.VERCEL_URL || 'http://localhost:' + PORT,
             environment: process.env.NODE_ENV || 'development',
-            timestamp: new Date().toISOString()
+            serverless: true
         },
-        version: '3.0.0'
-    });
+        logs: {
+            totalLogs: logs.length,
+            viewLogs: '/api/logs?password=YOUR_PASSWORD',
+            password: LOG_PASSWORD
+        },
+        version: '3.0.0',
+        timestamp: new Date().toISOString()
+    };
+    
+    res.json(healthData);
 });
 
 // ===== DATABASE MANAGEMENT =====
@@ -442,7 +539,7 @@ app.post('/api/auth/register', async (req, res) => {
             });
         }
 
-        const { email, password, name, role, phone, subject, classes, class: userClass, section, rollNo, parentName, parentContact } = req.body;
+        const { email, password, name, role, phone, subject, classes, class: userClass, section, rollNo, parentName, parentContact, avatar } = req.body;
 
         // Validate required fields
         if (!email || !password || !name || !role) {
@@ -461,13 +558,21 @@ app.post('/api/auth/register', async (req, res) => {
             });
         }
 
+        // Default avatar based on role
+        const defaultAvatars = {
+            admin: 'https://via.placeholder.com/150/0088cc/ffffff?text=Admin',
+            student: 'https://via.placeholder.com/150/00aa55/ffffff?text=Student',
+            teacher: 'https://via.placeholder.com/150/aa5500/ffffff?text=Teacher',
+            parent: 'https://via.placeholder.com/150/5500aa/ffffff?text=Parent'
+        };
+
         const userData = {
             email,
             password: password, // Plain text password
             name,
             role,
             phone: phone || '',
-            avatar: 'default-avatar.png',
+            avatar: avatar || defaultAvatars[role] || 'https://via.placeholder.com/150/666666/ffffff?text=User',
             isActive: true,
             lastLogin: null,
             createdAt: new Date(),
@@ -526,7 +631,7 @@ app.post('/api/auth/register', async (req, res) => {
                 password: password,
                 parentName: parentName || '',
                 parentContact: parentContact || '',
-                avatar: 'default-avatar.png',
+                avatar: userData.avatar,
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -554,7 +659,7 @@ app.post('/api/auth/register', async (req, res) => {
                 classes: classes || [],
                 contact: phone || '',
                 password: password,
-                avatar: 'default-avatar.png',
+                avatar: userData.avatar,
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -568,7 +673,7 @@ app.post('/api/auth/register', async (req, res) => {
                 phone: phone || '',
                 occupation: '',
                 children: [],
-                avatar: 'default-avatar.png',
+                avatar: userData.avatar,
                 isActive: true,
                 createdAt: new Date(),
                 updatedAt: new Date()
@@ -872,6 +977,64 @@ app.get('/api/users/:email', authenticateUser, async (req, res) => {
     }
 });
 
+// Update user avatar/profile image
+app.put('/api/users/:email/avatar', authenticateUser, async (req, res) => {
+    try {
+        const { avatar } = req.body;
+        
+        if (!avatar) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Avatar URL is required' 
+            });
+        }
+        
+        // Check permissions
+        if (req.user.role !== 'admin' && req.user.email !== req.params.email) {
+            return res.status(403).json({ 
+                success: false,
+                error: 'Access denied' 
+            });
+        }
+        
+        // Update user avatar
+        await db.collection('users').updateOne(
+            { email: req.params.email },
+            { $set: { avatar: avatar, updatedAt: new Date() } }
+        );
+        
+        // Update role-specific collection if exists
+        if (req.user.role === 'student') {
+            await db.collection('students').updateOne(
+                { email: req.params.email },
+                { $set: { avatar: avatar, updatedAt: new Date() } }
+            );
+        } else if (req.user.role === 'teacher') {
+            await db.collection('teachers').updateOne(
+                { email: req.params.email },
+                { $set: { avatar: avatar, updatedAt: new Date() } }
+            );
+        } else if (req.user.role === 'parent') {
+            await db.collection('parents').updateOne(
+                { email: req.params.email },
+                { $set: { avatar: avatar, updatedAt: new Date() } }
+            );
+        }
+        
+        res.json({
+            success: true,
+            message: 'Avatar updated successfully',
+            avatar: avatar,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
 // ===== STUDENT ROUTES =====
 app.get('/api/students', authenticateUser, authorizeRoles('admin', 'teacher'), async (req, res) => {
     try {
@@ -921,7 +1084,7 @@ app.get('/api/students', authenticateUser, authorizeRoles('admin', 'teacher'), a
     }
 });
 
-app.post('/api/students', authenticateUser, authorizeRoles('admin'), upload.single('avatar'), async (req, res) => {
+app.post('/api/students', authenticateUser, authorizeRoles('admin'), async (req, res) => {
     try {
         if (!db) {
             return res.status(503).json({ 
@@ -932,7 +1095,7 @@ app.post('/api/students', authenticateUser, authorizeRoles('admin'), upload.sing
 
         const { 
             firstName, lastName, class: studentClass, section, rollNo, 
-            email, parentName, parentContact
+            email, parentName, parentContact, avatar
         } = req.body;
 
         // Validate required fields
@@ -964,6 +1127,9 @@ app.post('/api/students', authenticateUser, authorizeRoles('admin'), upload.sing
             admissionNo = `KV${year}001`;
         }
 
+        // Default avatar
+        const defaultAvatar = 'https://via.placeholder.com/150/00aa55/ffffff?text=Student';
+
         // Prepare student data
         const studentData = {
             admissionNo: admissionNo,
@@ -976,7 +1142,7 @@ app.post('/api/students', authenticateUser, authorizeRoles('admin'), upload.sing
             password: 'student123', // Default password
             parentName: parentName || '',
             parentContact: parentContact || '',
-            avatar: req.file ? req.file.filename : 'default-avatar.png',
+            avatar: avatar || defaultAvatar,
             isActive: true,
             createdAt: new Date(),
             updatedAt: new Date()
@@ -998,7 +1164,7 @@ app.post('/api/students', authenticateUser, authorizeRoles('admin'), upload.sing
             admissionNo: admissionNo,
             parentName: parentName || '',
             parentContact: parentContact || '',
-            avatar: req.file ? req.file.filename : 'default-avatar.png',
+            avatar: avatar || defaultAvatar,
             isActive: true,
             createdAt: new Date(),
             updatedAt: new Date()
@@ -1029,10 +1195,6 @@ app.post('/api/students', authenticateUser, authorizeRoles('admin'), upload.sing
             timestamp: new Date().toISOString()
         });
     } catch (error) {
-        // Delete uploaded file if there was an error
-        if (req.file) {
-            fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename));
-        }
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -1097,7 +1259,7 @@ app.get('/api/students/:email', authenticateUser, async (req, res) => {
     }
 });
 
-app.put('/api/students/:email', authenticateUser, upload.single('avatar'), async (req, res) => {
+app.put('/api/students/:email', authenticateUser, async (req, res) => {
     try {
         if (!db) {
             return res.status(503).json({ 
@@ -1127,20 +1289,6 @@ app.put('/api/students/:email', authenticateUser, upload.single('avatar'), async
         }
         
         updateData.updatedAt = new Date();
-        
-        // Handle avatar upload
-        if (req.file) {
-            updateData.avatar = req.file.filename;
-            
-            // Delete old avatar if it's not the default
-            const oldStudent = await db.collection('students').findOne({ email: req.params.email });
-            if (oldStudent && oldStudent.avatar && oldStudent.avatar !== 'default-avatar.png') {
-                const oldAvatarPath = path.join(UPLOAD_DIR, oldStudent.avatar);
-                if (fs.existsSync(oldAvatarPath)) {
-                    fs.unlinkSync(oldAvatarPath);
-                }
-            }
-        }
 
         const result = await db.collection('students').updateOne(
             { email: req.params.email },
@@ -1168,13 +1316,11 @@ app.put('/api/students/:email', authenticateUser, upload.single('avatar'), async
         };
         
         // Remove undefined fields
-        if (userUpdate.name === undefined) delete userUpdate.name;
-        if (userUpdate.class === undefined) delete userUpdate.class;
-        if (userUpdate.section === undefined) delete userUpdate.section;
-        if (userUpdate.rollNo === undefined) delete userUpdate.rollNo;
-        if (userUpdate.parentName === undefined) delete userUpdate.parentName;
-        if (userUpdate.parentContact === undefined) delete userUpdate.parentContact;
-        if (userUpdate.avatar === undefined) delete userUpdate.avatar;
+        Object.keys(userUpdate).forEach(key => {
+            if (userUpdate[key] === undefined) {
+                delete userUpdate[key];
+            }
+        });
         
         await db.collection('users').updateOne(
             { email: req.params.email },
@@ -1187,10 +1333,6 @@ app.put('/api/students/:email', authenticateUser, upload.single('avatar'), async
             timestamp: new Date().toISOString()
         });
     } catch (error) {
-        // Delete uploaded file if there was an error
-        if (req.file) {
-            fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename));
-        }
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -1277,10 +1419,10 @@ app.get('/api/teachers', authenticateUser, async (req, res) => {
     }
 });
 
-app.post('/api/teachers', authenticateUser, authorizeRoles('admin'), upload.single('avatar'), async (req, res) => {
+app.post('/api/teachers', authenticateUser, authorizeRoles('admin'), async (req, res) => {
     try {
         const { 
-            name, email, subject, classes, contact
+            name, email, subject, classes, contact, avatar
         } = req.body;
 
         // Validate required fields
@@ -1311,6 +1453,9 @@ app.post('/api/teachers', authenticateUser, authorizeRoles('admin'), upload.sing
             teacherId = 'TCH001';
         }
 
+        // Default avatar
+        const defaultAvatar = 'https://via.placeholder.com/150/aa5500/ffffff?text=Teacher';
+
         // Prepare teacher data
         const teacherData = {
             teacherId: teacherId,
@@ -1322,7 +1467,7 @@ app.post('/api/teachers', authenticateUser, authorizeRoles('admin'), upload.sing
             classes: classes || [],
             contact: contact || '',
             password: 'teacher123', // Default password
-            avatar: req.file ? req.file.filename : 'default-avatar.png',
+            avatar: avatar || defaultAvatar,
             isActive: true,
             createdAt: new Date(),
             updatedAt: new Date()
@@ -1341,7 +1486,7 @@ app.post('/api/teachers', authenticateUser, authorizeRoles('admin'), upload.sing
             subject: subject,
             classes: classes || [],
             contact: contact || '',
-            avatar: req.file ? req.file.filename : 'default-avatar.png',
+            avatar: avatar || defaultAvatar,
             isActive: true,
             createdAt: new Date(),
             updatedAt: new Date()
@@ -1371,10 +1516,6 @@ app.post('/api/teachers', authenticateUser, authorizeRoles('admin'), upload.sing
             timestamp: new Date().toISOString()
         });
     } catch (error) {
-        // Delete uploaded file if there was an error
-        if (req.file) {
-            fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename));
-        }
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -1635,10 +1776,15 @@ app.get('/api/attendance/class/:class/date/:date', authenticateUser, async (req,
         
         const attendance = await db.collection('attendance').find({
             class: req.params.class,
-            date: { $gte: startOfDay, $lte: endDate }
+            date: { $gte: startOfDay, $lte: endOfDay }
         }).toArray();
         
-        res.json(attendance);
+        res.json({
+            success: true,
+            attendance: attendance,
+            count: attendance.length,
+            timestamp: new Date().toISOString()
+        });
     } catch (error) {
         res.status(500).json({ 
             success: false,
@@ -1842,7 +1988,7 @@ app.get('/api/resources', authenticateUser, async (req, res) => {
 
 app.post('/api/resources', authenticateUser, async (req, res) => {
     try {
-        const { type, title, content, subject, class: resourceClass } = req.body;
+        const { type, title, content, subject, class: resourceClass, fileUrl } = req.body;
 
         // Prepare resource data
         const resourceData = {
@@ -1851,6 +1997,7 @@ app.post('/api/resources', authenticateUser, async (req, res) => {
             content: content,
             subject: subject,
             class: resourceClass,
+            fileUrl: fileUrl || '',
             createdBy: req.user.email,
             createdAt: new Date(),
             updatedAt: new Date()
@@ -2086,6 +2233,42 @@ app.post('/api/videos', authenticateUser, async (req, res) => {
             success: true,
             message: 'Video added successfully',
             video: video,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ===== FILE URL UPLOAD ENDPOINT =====
+app.post('/api/upload-url', authenticateUser, async (req, res) => {
+    try {
+        const { url, fileName, fileType, fileSize } = req.body;
+
+        if (!url) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'File URL is required' 
+            });
+        }
+
+        const fileInfo = {
+            url: url,
+            fileName: fileName || url.split('/').pop(),
+            fileType: fileType || 'unknown',
+            fileSize: fileSize || 0,
+            uploadedBy: req.user.email,
+            uploadedAt: new Date(),
+            uploadedByName: req.user.name
+        };
+
+        res.json({
+            success: true,
+            message: 'File URL saved successfully',
+            file: fileInfo,
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -2344,44 +2527,6 @@ app.get('/api/search/:query', authenticateUser, async (req, res) => {
     }
 });
 
-// ===== FILE UPLOAD ROUTE =====
-app.post('/api/upload', authenticateUser, upload.single('file'), async (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'No file uploaded' 
-            });
-        }
-
-        const fileInfo = {
-            filename: req.file.filename,
-            originalName: req.file.originalname,
-            mimetype: req.file.mimetype,
-            size: req.file.size,
-            uploadedBy: req.user.email,
-            uploadedAt: new Date(),
-            url: '/uploads/' + req.file.filename
-        };
-
-        res.json({
-            success: true,
-            message: 'File uploaded successfully',
-            file: fileInfo,
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        // Delete uploaded file if there was an error
-        if (req.file) {
-            fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename));
-        }
-        res.status(500).json({ 
-            success: false,
-            error: error.message 
-        });
-    }
-});
-
 // ===== ROOT ENDPOINT =====
 app.get('/', (req, res) => {
     const dbStatus = db ? 'connected' : 'disconnected';
@@ -2392,76 +2537,13 @@ app.get('/', (req, res) => {
         version: '3.0.0',
         status: 'operational',
         deployment: {
-            url: 'https://eduhub-production-3279.up.railway.app/',
+            url: process.env.VERCEL_URL || 'http://localhost:' + PORT,
             database: dbStatus,
-            currentDatabase: dbName
-        },
-        endpoints: {
-            health: 'GET /api/health',
-            auth: [
-                'POST /api/auth/register',
-                'POST /api/auth/login',
-                'POST /api/auth/change-password (authenticated)'
-            ],
-            students: [
-                'GET /api/students (admin/teacher)',
-                'POST /api/students (admin only)',
-                'GET /api/students/:email',
-                'PUT /api/students/:email',
-                'GET /api/students/class/:class/section/:section'
-            ],
-            teachers: [
-                'GET /api/teachers',
-                'POST /api/teachers (admin only)',
-                'GET /api/teachers/:email'
-            ],
-            courses: [
-                'GET /api/courses',
-                'POST /api/courses (admin/teacher)',
-                'GET /api/courses/:id',
-                'GET /api/courses/class/:class'
-            ],
-            attendance: [
-                'GET /api/attendance',
-                'POST /api/attendance (teacher/admin)',
-                'GET /api/attendance/student/:email'
-            ],
-            results: [
-                'GET /api/results',
-                'POST /api/results (teacher/admin)',
-                'GET /api/results/student/:email'
-            ],
-            announcements: [
-                'GET /api/announcements',
-                'POST /api/announcements (admin/teacher)'
-            ],
-            resources: [
-                'GET /api/resources',
-                'POST /api/resources'
-            ],
-            flashcards: [
-                'GET /api/flashcards',
-                'POST /api/flashcards'
-            ],
-            notes: [
-                'GET /api/notes',
-                'POST /api/notes',
-                'DELETE /api/notes/:id'
-            ],
-            study_times: [
-                'GET /api/study-times',
-                'POST /api/study-times'
-            ],
-            videos: [
-                'GET /api/videos',
-                'POST /api/videos'
-            ],
-            dashboard: 'GET /api/dashboard/stats',
-            search: 'GET /api/search/:query',
-            upload: 'POST /api/upload (authenticated)'
+            currentDatabase: dbName,
+            serverless: true
         },
         features: [
-            'Complete school management system',
+            'Complete school management system (Serverless)',
             'Role-based access control (Admin, Teacher, Student, Parent)',
             'Student information management',
             'Teacher management',
@@ -2471,16 +2553,26 @@ app.get('/', (req, res) => {
             'Announcement system',
             'Study tools (flashcards, notes, study times)',
             'Video management',
-            'File upload support',
+            'URL-based file uploads',
+            'Advanced logging system',
             'Dashboard with statistics',
-            'Advanced search functionality'
+            'Search functionality',
+            'Vercel Serverless Ready'
         ],
+        important_endpoints: {
+            health_check: 'GET /api/health',
+            logs: 'GET /api/logs?password=bunny',
+            auth_register: 'POST /api/auth/register',
+            auth_login: 'POST /api/auth/login',
+            upload_file_url: 'POST /api/upload-url (authenticated)'
+        },
         default_credentials: {
             admin: 'admin@eduhub.com / admin123',
             student: 'student@kv.edu / student123',
             teacher: 'teacher@kv.edu / teacher123',
             parent: 'parent@example.com / parent123'
         },
+        logs_password: 'bunny',
         timestamp: new Date().toISOString()
     });
 });
@@ -2489,15 +2581,17 @@ app.get('/', (req, res) => {
 app.use((err, req, res, next) => {
     console.error('❌ Server Error:', err.message);
     
-    // Handle file upload errors
-    if (err instanceof multer.MulterError) {
-        return res.status(400).json({
-            success: false,
-            error: 'File upload error: ' + err.message
-        });
-    }
+    // Log the error
+    logs.unshift({
+        timestamp: new Date().toISOString(),
+        event: 'Server Error',
+        error: err.message,
+        stack: err.stack,
+        url: req.url,
+        method: req.method,
+        status: 'error'
+    });
     
-    // Default error
     res.status(500).json({
         success: false,
         error: 'Internal server error',
@@ -2513,7 +2607,8 @@ app.use((req, res) => {
         message: 'The requested endpoint ' + req.method + ' ' + req.path + ' does not exist',
         availableEndpoints: {
             root: 'GET /',
-            apiDocs: 'GET /api/health',
+            health: 'GET /api/health',
+            logs: 'GET /api/logs?password=bunny',
             auth: 'POST /api/auth/login'
         }
     });
@@ -2523,12 +2618,16 @@ app.use((req, res) => {
 app.listen(PORT, () => {
     console.log('🚀 EduHub Backend running on port ' + PORT);
     console.log('📊 Environment: ' + (process.env.NODE_ENV || 'development'));
+    console.log('🔄 Serverless mode: Enabled');
     console.log('🗄️ Current database: ' + dbName);
-    console.log('🌐 Deployment URL: https://eduhub-production-3279.up.railway.app/');
-    console.log('🔗 Health check: https://eduhub-production-3279.up.railway.app/api/health');
-    console.log('🌐 API Root: https://eduhub-production-3279.up.railway.app/');
-    console.log('📁 Upload directory: ' + UPLOAD_DIR);
-    console.log('📝 Default credentials:');
+    console.log('📝 Logs password: ' + LOG_PASSWORD);
+    console.log('');
+    console.log('📡 Important Endpoints:');
+    console.log('   👁️  View logs: http://localhost:' + PORT + '/api/logs?password=' + LOG_PASSWORD);
+    console.log('   🩺 Health check: http://localhost:' + PORT + '/api/health');
+    console.log('   👤 Login: http://localhost:' + PORT + '/api/auth/login');
+    console.log('');
+    console.log('🔐 Default credentials:');
     console.log('   Admin: admin@eduhub.com / admin123');
     console.log('   Student: student@kv.edu / student123');
     console.log('   Teacher: teacher@kv.edu / teacher123');
@@ -2552,3 +2651,4 @@ process.on('SIGINT', async () => {
     console.log('👋 Server stopped');
     process.exit(0);
 });
+
