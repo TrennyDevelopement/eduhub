@@ -1,40 +1,779 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
-const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 5000;
 
-// Store logs in memory (in production, you might want to use a logging service)
-const logs = [];
-const LOG_PASSWORD = process.env.LOG_PASSWORD || 'bunny';
-// Add this at the VERY BEGINNING of your file
-process.on('uncaughtException', (error) => {
-    console.error('💥 UNCAUGHT EXCEPTION:', error);
-    console.error(error.stack);
+// CORS configuration - ACCEPTS ANY FRONTEND URL
+app.use(cors({
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+
+app.options('*', cors());
+app.use(express.json());
+
+// MongoDB Connection
+const MONGODB_URI = 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/trennydev?retryWrites=true&w=majority';
+
+const client = new MongoClient(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('💥 UNHANDLED REJECTION at:', promise, 'reason:', reason);
+let db;
+
+// Connect to MongoDB
+const connectToMongoDB = async () => {
+    try {
+        console.log('🔄 Connecting to MongoDB...');
+        await client.connect();
+        db = client.db('eduhub_school');
+        console.log('✅ MongoDB connected successfully');
+        
+        // Create collections if they don't exist
+        await initializeCollections();
+        await initializeDefaultData();
+        
+    } catch (error) {
+        console.error('❌ MongoDB connection failed:', error.message);
+        console.log('🔄 Retrying in 5 seconds...');
+        setTimeout(connectToMongoDB, 5000);
+    }
+};
+
+// Initialize collections
+const initializeCollections = async () => {
+    const collections = ['users', 'students', 'teachers', 'courses', 'attendance', 'results', 'announcements', 'resources', 'flashcards', 'notes', 'studytimes', 'videos'];
+    
+    for (const collectionName of collections) {
+        try {
+            await db.createCollection(collectionName);
+            console.log(`✅ Collection ${collectionName} created/verified`);
+        } catch (error) {
+            // Collection already exists - this is fine
+        }
+    }
+};
+
+// Initialize default data
+const initializeDefaultData = async () => {
+    try {
+        console.log('🔄 Checking for default data...');
+
+        // Check if admin exists
+        const adminExists = await db.collection('users').findOne({ email: 'admin@eduhub.com' });
+        if (!adminExists) {
+            await db.collection('users').insertOne({
+                email: 'admin@eduhub.com',
+                password: 'admin123', // Plain password
+                name: 'System Administrator',
+                role: 'admin',
+                phone: '9876543210',
+                createdAt: new Date()
+            });
+            console.log('✅ Default admin user created');
+        }
+
+        // Check if default student exists
+        const studentExists = await db.collection('students').findOne({ email: 'student@kv.edu' });
+        if (!studentExists) {
+            await db.collection('students').insertOne({
+                admissionNo: 'KV2023001',
+                firstName: 'Aarav',
+                lastName: 'Sharma',
+                class: '11',
+                section: 'A',
+                rollNo: 1,
+                parentName: 'Rajesh Sharma',
+                parentContact: '9876543210',
+                email: 'student@kv.edu',
+                createdAt: new Date()
+            });
+            console.log('✅ Default student created');
+        }
+
+        console.log('✅ Default data initialization completed');
+    } catch (error) {
+        console.error('❌ Error initializing data:', error.message);
+    }
+};
+
+// Start the connection
+connectToMongoDB();
+
+// Authentication Middleware (simplified - just checks if user exists)
+const authenticateUser = async (req, res, next) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password required' });
+    }
+
+    try {
+        const user = await db.collection('users').findOne({ email, password });
+        
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        req.user = user;
+        next();
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// Utility function to calculate grade
+const calculateGrade = (marks) => {
+    if (marks >= 90) return 'A';
+    if (marks >= 80) return 'B';
+    if (marks >= 70) return 'C';
+    if (marks >= 60) return 'D';
+    return 'F';
+};
+
+// ===== HEALTH CHECK =====
+app.get('/api/health', (req, res) => {
+    const dbStatus = db ? 'connected' : 'disconnected';
+    
+    res.json({ 
+        status: 'OK', 
+        message: 'EduHub Backend is running!',
+        database: dbStatus,
+        timestamp: new Date().toISOString(),
+        version: '1.0.0'
+    });
 });
-// Add request logging middleware
-app.use((req, res, next) => {
-    const start = Date.now();
-    const originalSend = res.send;
+
+// ===== AUTHENTICATION ROUTES =====
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected. Please try again.' });
+        }
+
+        const { email, password, name, role, phone, subject, classes, class: userClass, section, rollNo, parentName, parentContact, childId } = req.body;
+
+        const existingUser = await db.collection('users').findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ error: 'User already exists' });
+        }
+
+        const userData = {
+            email,
+            password: password, // Plain password
+            name,
+            role,
+            phone,
+            subject,
+            classes,
+            class: userClass,
+            section,
+            rollNo,
+            parentName,
+            parentContact,
+            childId,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('users').insertOne(userData);
+        const user = await db.collection('users').findOne({ _id: result.insertedId });
+
+        res.status(201).json({
+            message: 'User created successfully',
+            user: {
+                _id: user._id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                class: user.class,
+                section: user.section,
+                rollNo: user.rollNo,
+                subject: user.subject,
+                classes: user.classes,
+                childId: user.childId
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/auth/login', authenticateUser, async (req, res) => {
+    try {
+        res.json({
+            message: 'Login successful',
+            user: {
+                _id: req.user._id,
+                email: req.user.email,
+                name: req.user.name,
+                role: req.user.role,
+                class: req.user.class,
+                section: req.user.section,
+                rollNo: req.user.rollNo,
+                subject: req.user.subject,
+                classes: req.user.classes,
+                childId: req.user.childId
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Simple authentication middleware for protected routes
+const requireAuth = async (req, res, next) => {
+    const { email, password } = req.headers;
+
+    if (!email || !password) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    try {
+        const user = await db.collection('users').findOne({ email, password });
+        
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        req.user = user;
+        next();
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// ===== STUDENT ROUTES =====
+app.get('/api/students', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const students = await db.collection('students').find().toArray();
+        res.json(students);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/students', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { firstName, lastName, class: studentClass, section, rollNo, admissionNo, email, parentName, parentContact } = req.body;
+
+        const studentData = {
+            firstName,
+            lastName,
+            class: studentClass,
+            section,
+            rollNo,
+            admissionNo,
+            email,
+            parentName,
+            parentContact,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('students').insertOne(studentData);
+        const student = await db.collection('students').findOne({ _id: result.insertedId });
+
+        // Also create user account
+        await db.collection('users').insertOne({
+            email: email,
+            password: 'student123', // Plain password
+            name: `${firstName} ${lastName}`,
+            role: 'student',
+            class: studentClass,
+            section: section,
+            rollNo: rollNo,
+            admissionNo: admissionNo,
+            parentName: parentName,
+            parentContact: parentContact,
+            createdAt: new Date()
+        });
+
+        res.status(201).json({ message: 'Student created successfully', student });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== TEACHER ROUTES =====
+app.get('/api/teachers', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const teachers = await db.collection('teachers').find().toArray();
+        res.json(teachers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/teachers', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { name, email, subject, classes, contact } = req.body;
+
+        const teacherData = {
+            name,
+            email,
+            subject,
+            classes,
+            contact,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('teachers').insertOne(teacherData);
+        const teacher = await db.collection('teachers').findOne({ _id: result.insertedId });
+
+        // Also create user account
+        await db.collection('users').insertOne({
+            email: email,
+            password: 'teacher123', // Plain password
+            name: name,
+            role: 'teacher',
+            subject: subject,
+            classes: classes,
+            contact: contact,
+            createdAt: new Date()
+        });
+
+        res.status(201).json({ message: 'Teacher created successfully', teacher });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== COURSE ROUTES =====
+app.get('/api/courses', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const courses = await db.collection('courses').find().toArray();
+        res.json(courses);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/courses', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { title, subject, class: courseClass, description, teacher, youtubeUrl } = req.body;
+
+        const courseData = {
+            title,
+            subject,
+            class: courseClass,
+            description,
+            teacher,
+            youtubeUrl,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('courses').insertOne(courseData);
+        const course = await db.collection('courses').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Course created successfully', course });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== ATTENDANCE ROUTES =====
+app.get('/api/attendance', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const attendance = await db.collection('attendance').find().toArray();
+        res.json(attendance);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/attendance', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { date, class: attendanceClass, students } = req.body;
+
+        const attendanceData = {
+            date: new Date(date),
+            class: attendanceClass,
+            students,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('attendance').insertOne(attendanceData);
+        const attendance = await db.collection('attendance').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Attendance recorded successfully', attendance });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== RESULTS ROUTES =====
+app.get('/api/results', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const results = await db.collection('results').find().toArray();
+        res.json(results);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/results', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { studentId, examType, subject, marks, totalMarks, class: resultClass, driveLink } = req.body;
+
+        const grade = calculateGrade(marks);
+
+        const resultData = {
+            studentId,
+            examType,
+            subject,
+            marks,
+            totalMarks,
+            grade,
+            class: resultClass,
+            driveLink,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('results').insertOne(resultData);
+        const newResult = await db.collection('results').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Result saved successfully', result: newResult });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== ANNOUNCEMENT ROUTES =====
+app.get('/api/announcements', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const announcements = await db.collection('announcements').find().toArray();
+        res.json(announcements);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/announcements', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { title, content, audience, priority } = req.body;
+
+        const announcementData = {
+            title,
+            content,
+            audience,
+            priority,
+            createdBy: req.user._id,
+            date: new Date()
+        };
+
+        const result = await db.collection('announcements').insertOne(announcementData);
+        const announcement = await db.collection('announcements').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Announcement created successfully', announcement });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== RESOURCE ROUTES =====
+app.get('/api/resources', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const resources = await db.collection('resources').find().toArray();
+        res.json(resources);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/resources', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { type, title, content, subject, class: resourceClass } = req.body;
+
+        const resourceData = {
+            type,
+            title,
+            content,
+            subject,
+            class: resourceClass,
+            createdBy: req.user._id,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('resources').insertOne(resourceData);
+        const resource = await db.collection('resources').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Resource created successfully', resource });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== FLASHCARD ROUTES =====
+app.get('/api/flashcards', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const flashcards = await db.collection('flashcards').find({ createdBy: req.user._id }).toArray();
+        res.json(flashcards);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/flashcards', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { question, answer } = req.body;
+
+        const flashcardData = {
+            question,
+            answer,
+            createdBy: req.user._id,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('flashcards').insertOne(flashcardData);
+        const flashcard = await db.collection('flashcards').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Flashcard created successfully', flashcard });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== NOTE ROUTES =====
+app.get('/api/notes', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const notes = await db.collection('notes').find({ createdBy: req.user._id }).toArray();
+        res.json(notes);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/notes', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { content } = req.body;
+
+        const noteData = {
+            content,
+            createdBy: req.user._id,
+            date: new Date()
+        };
+
+        const result = await db.collection('notes').insertOne(noteData);
+        const note = await db.collection('notes').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Note created successfully', note });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/notes/:id', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        await db.collection('notes').deleteOne({ _id: new ObjectId(req.params.id), createdBy: req.user._id });
+        res.json({ message: 'Note deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== STUDY TIME ROUTES =====
+app.get('/api/study-times', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const studyTimes = await db.collection('studytimes').find({ userId: req.user._id }).toArray();
+        res.json(studyTimes);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/study-times', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { minutes } = req.body;
+
+        const studyTimeData = {
+            userId: req.user._id,
+            minutes,
+            date: new Date()
+        };
+
+        const result = await db.collection('studytimes').insertOne(studyTimeData);
+        const studyTime = await db.collection('studytimes').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Study time updated successfully', studyTime });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== VIDEO ROUTES =====
+app.get('/api/videos', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        const videos = await db.collection('videos').find().toArray();
+        res.json(videos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/videos', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const { courseId, title, description, youtubeId, order } = req.body;
+
+        const videoData = {
+            courseId,
+            title,
+            description,
+            youtubeId,
+            order,
+            createdAt: new Date()
+        };
+
+        const result = await db.collection('videos').insertOne(videoData);
+        const video = await db.collection('videos').findOne({ _id: result.insertedId });
+
+        res.status(201).json({ message: 'Video added successfully', video });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== DASHBOARD STATS =====
+app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+
+        const totalStudents = await db.collection('students').countDocuments();
+        const totalTeachers = await db.collection('teachers').countDocuments();
+        const totalCourses = await db.collection('courses').countDocuments();
+        
+        res.json({
+            totalStudents,
+            totalTeachers,
+            totalCourses,
+            attendanceRate: '92%',
+            pendingTasks: Math.floor(Math.random() * 20) + 5
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== ROOT ENDPOINT =====
+app.get('/', (req, res) => {
+    const dbStatus = db ? 'connected' : 'disconnected';
     
-    // Store response data
-    let responseBody = '';
-    res.send = function(body) {
-        responseBody = body;
-        return originalSend.call(this, body);
-    };
-    
-    // Log after response is sent
-    res.on('finish', () => {
-        const duration = Date.now() - start;
-        const logEntry = {
-            timestamp: new Date().toISOString(),
+    res.json({ 
+        message: 'EduHub School Management System API',
+        version: '1.0.0',
+        database: dbStatus,
+        endpoints: {
+            health: 'GET /api/health',
+            auth: ['POST /api/auth/login', 'POST /api/auth/register'],
+            students: ['GET /api/students', 'POST /api/students'],
+            teachers: ['GET /api/teachers', 'POST /api/teachers'],
+            courses: ['GET /api/courses', 'POST /api/courses'],
+            attendance: ['GET /api/attendance', 'POST /api/attendance'],
+            results: ['GET /api/results', 'POST /api/results'],
+            announcements: ['GET /api/announcements', 'POST /api/announcements'],
+            resources: ['GET /api/resources', 'POST /api/resources'],
+            flashcards: ['GET /api/flashcards', 'POST /api/flashcards'],
+            notes: ['GET /api/notes', 'POST /api/notes', 'DELETE /api/notes/:id'],
+            study_times: ['GET /api/study-times', 'POST /api/study-times'],
+            videos: ['GET /api/videos', 'POST /api/videos'],
+            dashboard: 'GET /api/dashboard/stats'
+        }
+    });
+});
+
+// Start Server
+app.listen(PORT, () => {
+    console.log(`🚀 EduHub Backend running on port ${PORT}`);
+    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`🌐 API Root: http://localhost:${PORT}/`);
+});            timestamp: new Date().toISOString(),
             method: req.method,
             url: req.url,
             ip: req.ip || req.connection.remoteAddress,
