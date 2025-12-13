@@ -1,25 +1,86 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
+const moment = require('moment');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
-// CORS configuration - ALLOWING CUSTOM HEADERS
+// Enable CORS for all routes
 app.use(cors({
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-user-email', 'x-user-password']
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-email', 'x-user-password', 'x-user-id', 'x-user-role', 'x-token']
 }));
 
-app.options('*', cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // MongoDB Connection
-const MONGODB_URI = 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/trennydev?retryWrites=true&w=majority';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/eduhub_school?retryWrites=true&w=majority';
 const client = new MongoClient(MONGODB_URI);
 let db;
+
+// Global System Configuration
+let systemConfig = {
+    // Security Features (Admin can toggle these)
+    security: {
+        passwordHashing: false, // Default: No hashing
+        jwtEnabled: false, // Default: No JWT
+        sessionTimeout: 24, // Hours
+        maxLoginAttempts: 5,
+        enable2FA: false,
+        requireStrongPassword: false
+    },
+    
+    // Backup Settings
+    backup: {
+        enabled: true,
+        interval: 6, // hours
+        maxBackups: 3,
+        autoBackup: true
+    },
+    
+    // Feature Toggles (Admin can enable/disable)
+    features: {
+        attendance: true,
+        exams: true,
+        results: true,
+        assignments: true,
+        library: true,
+        fees: true,
+        transport: true,
+        hostel: true,
+        medical: true,
+        announcements: true,
+        resources: true,
+        gallery: true,
+        events: true,
+        quizzes: true,
+        studyTools: true,
+        classTests: true,
+        analytics: true,
+        notifications: true
+    },
+    
+    // System Settings
+    system: {
+        schoolName: "EduHub International School",
+        schoolCode: "EHIS001",
+        academicYear: "2024-2025",
+        currency: "₹",
+        timezone: "Asia/Kolkata",
+        dateFormat: "DD/MM/YYYY",
+        maxFileSize: 10, // MB
+        allowedFileTypes: ['pdf', 'doc', 'docx', 'jpg', 'png', 'mp4', 'mp3']
+    }
+};
+
+// JWT Secret (for when JWT is enabled)
+const JWT_SECRET = process.env.JWT_SECRET || 'eduhub-school-management-secret-key-2024';
 
 // Connect to MongoDB
 const connectToMongoDB = async () => {
@@ -30,1466 +91,2424 @@ const connectToMongoDB = async () => {
         console.log('✅ MongoDB connected successfully');
         
         await initializeCollections();
+        await loadSystemConfig();
         await initializeDefaultData();
+        startBackupScheduler();
+        startCleanupScheduler();
+        
+        console.log('🚀 System initialized successfully');
+        console.log('📊 Security Features:');
+        console.log(`   • Password Hashing: ${systemConfig.security.passwordHashing ? '✅ Enabled' : '❌ Disabled'}`);
+        console.log(`   • JWT Authentication: ${systemConfig.security.jwtEnabled ? '✅ Enabled' : '❌ Disabled'}`);
         
     } catch (error) {
         console.error('❌ MongoDB connection failed:', error.message);
-        console.log('🔄 Retrying in 5 seconds...');
         setTimeout(connectToMongoDB, 5000);
     }
 };
 
 // Initialize collections
 const initializeCollections = async () => {
-    const collections = ['users', 'students', 'teachers', 'courses', 'attendance', 'results', 'announcements', 'resources', 'flashcards', 'notes', 'studytimes', 'videos', 'events', 'leaderboard'];
+    const collections = [
+        // Core collections
+        'users', 'students', 'teachers', 'parents', 'admins', 'examiners', 'principals', 'librarians',
+        'classes', 'sections', 'subjects', 'departments',
+        
+        // Academic collections
+        'courses', 'chapters', 'topics',
+        'attendance', 'attendance_records',
+        'exams', 'exam_schedules', 'exam_results',
+        'assignments', 'submissions',
+        'class_tests', 'test_results',
+        
+        // Resource collections
+        'resources', 'resource_categories',
+        'videos', 'video_categories',
+        'notes', 'note_categories',
+        'question_papers', 'syllabus',
+        
+        // Library collections
+        'library_books', 'book_categories',
+        'book_issues', 'book_returns',
+        
+        // Financial collections
+        'fee_structures', 'fee_payments', 'fee_receipts',
+        'fee_categories', 'discounts',
+        
+        // Communication collections
+        'announcements', 'notifications', 'messages',
+        'circulars', 'notices',
+        
+        // Event collections
+        'events', 'calendars', 'holidays', 'important_dates',
+        
+        // System collections
+        'system_config', 'system_logs', 'audit_logs',
+        'backups', 'backup_history',
+        
+        // Role & Permission collections
+        'roles', 'permissions', 'role_assignments',
+        'user_roles', 'role_permissions',
+        
+        // Analytics collections
+        'analytics_data', 'graphs_data', 'statistics',
+        'performance_metrics', 'attendance_reports',
+        
+        // Gallery collections
+        'galleries', 'photos', 'albums', 'videos_gallery',
+        
+        // Transportation collections
+        'transport_routes', 'transport_vehicles', 'transport_assignments',
+        
+        // Hostel collections
+        'hostels', 'hostel_rooms', 'hostel_allocations',
+        
+        // Medical collections
+        'medical_records', 'vaccinations', 'medical_appointments',
+        
+        // Achievement collections
+        'achievements', 'certificates', 'awards',
+        
+        // Feedback collections
+        'feedbacks', 'surveys', 'poll_responses',
+        
+        // Study tools
+        'flashcards', 'flashcard_sets',
+        'quizzes', 'quiz_questions', 'quiz_attempts',
+        'study_plans', 'study_sessions', 'study_groups',
+        
+        // Timetable collections
+        'timetables', 'periods', 'timetable_slots',
+        
+        // Other
+        'suspended_users', 'login_attempts', 'password_resets'
+    ];
     
     for (const collectionName of collections) {
         try {
             await db.createCollection(collectionName);
-            console.log(`✅ Collection ${collectionName} created/verified`);
         } catch (error) {
             // Collection already exists
         }
     }
+    
+    // Create indexes
+    await createIndexes();
+    console.log('✅ Database initialized');
 };
 
-// Initialize default data
-const initializeDefaultData = async () => {
+// Create indexes
+const createIndexes = async () => {
+    // Core indexes
+    await db.collection('users').createIndex({ email: 1 }, { unique: true });
+    await db.collection('users').createIndex({ role: 1 });
+    await db.collection('users').createIndex({ status: 1 });
+    
+    await db.collection('students').createIndex({ admissionNo: 1 }, { unique: true });
+    await db.collection('students').createIndex({ class: 1, section: 1, rollNo: 1 });
+    
+    await db.collection('teachers').createIndex({ teacherId: 1 }, { unique: true });
+    
+    // Exam indexes
+    await db.collection('exams').createIndex({ examCode: 1 }, { unique: true });
+    await db.collection('exams').createIndex({ class: 1, date: 1 });
+    
+    await db.collection('exam_results').createIndex({ 
+        studentId: 1, 
+        examId: 1, 
+        subject: 1 
+    }, { unique: true });
+    
+    // Library indexes
+    await db.collection('library_books').createIndex({ isbn: 1 }, { unique: true });
+    await db.collection('book_issues').createIndex({ studentId: 1, returned: 1 });
+    
+    // Fee indexes
+    await db.collection('fee_structures').createIndex({ feeCode: 1 }, { unique: true });
+    
+    // Audit log indexes
+    await db.collection('audit_logs').createIndex({ timestamp: -1 });
+    await db.collection('audit_logs').createIndex({ userId: 1 });
+    
+    // Resource indexes
+    await db.collection('resources').createIndex({ type: 1, subject: 1 });
+};
+
+// Load system configuration from database
+const loadSystemConfig = async () => {
     try {
-        console.log('🔄 Checking for default data...');
-
-        // Check if admin exists
-        const adminExists = await db.collection('users').findOne({ email: 'admin@eduhub.com' });
-        if (!adminExists) {
-            await db.collection('users').insertOne({
-                email: 'admin@eduhub.com',
-                password: 'admin123',
-                name: 'System Administrator',
-                role: 'admin',
-                phone: '9876543210',
-                createdAt: new Date()
-            });
-            console.log('✅ Default admin user created');
+        const config = await db.collection('system_config').findOne({});
+        if (config) {
+            systemConfig = { ...systemConfig, ...config };
+            console.log('📋 System configuration loaded');
+        } else {
+            // Save default config
+            await db.collection('system_config').insertOne(systemConfig);
+            console.log('📋 Default system configuration saved');
         }
-
-        // Check if default student exists
-        const studentExists = await db.collection('students').findOne({ email: 'student@kv.edu' });
-        if (!studentExists) {
-            const studentResult = await db.collection('students').insertOne({
-                admissionNo: 'KV2023001',
-                firstName: 'Aarav',
-                lastName: 'Sharma',
-                class: '11',
-                section: 'A',
-                rollNo: 1,
-                parentName: 'Rajesh Sharma',
-                parentContact: '9876543210',
-                email: 'student@kv.edu',
-                createdAt: new Date()
-            });
-            
-            // Create corresponding user account
-            await db.collection('users').insertOne({
-                email: 'student@kv.edu',
-                password: 'student123',
-                name: 'Aarav Sharma',
-                role: 'student',
-                class: '11',
-                section: 'A',
-                rollNo: 1,
-                admissionNo: 'KV2023001',
-                studentId: studentResult.insertedId,
-                createdAt: new Date()
-            });
-            console.log('✅ Default student created');
-        }
-
-        // Check if default teacher exists
-        const teacherExists = await db.collection('teachers').findOne({ email: 'teacher@kv.edu' });
-        if (!teacherExists) {
-            const teacherResult = await db.collection('teachers').insertOne({
-                name: 'Priya Sharma',
-                email: 'teacher@kv.edu',
-                subject: 'Mathematics',
-                classes: ['11-A', '12-A'],
-                contact: '9876543211',
-                createdAt: new Date()
-            });
-            
-            // Create corresponding user account
-            await db.collection('users').insertOne({
-                email: 'teacher@kv.edu',
-                password: 'teacher123',
-                name: 'Priya Sharma',
-                role: 'teacher',
-                subject: 'Mathematics',
-                classes: ['11-A', '12-A'],
-                contact: '9876543211',
-                teacherId: teacherResult.insertedId,
-                createdAt: new Date()
-            });
-            console.log('✅ Default teacher created');
-        }
-
-        // Check if default parent exists
-        const parentExists = await db.collection('users').findOne({ email: 'parent@kv.edu' });
-        if (!parentExists) {
-            await db.collection('users').insertOne({
-                email: 'parent@kv.edu',
-                password: 'parent123',
-                name: 'Rajesh Sharma',
-                role: 'parent',
-                phone: '9876543212',
-                childId: 'KV2023001', // Linked to default student
-                createdAt: new Date()
-            });
-            console.log('✅ Default parent created');
-        }
-
-        // Check if default courses exist
-        const coursesExist = await db.collection('courses').countDocuments();
-        if (coursesExist === 0) {
-            await db.collection('courses').insertMany([
-                {
-                    title: 'Mathematics Class 11',
-                    subject: 'Mathematics',
-                    class: '11',
-                    description: 'Complete Mathematics course for Class 11',
-                    teacher: 'Priya Sharma',
-                    youtubeUrl: 'https://www.youtube.com/playlist?list=PLxCzCOWd7aiGz9donHRrE9I3Mwn6XdP8p',
-                    createdAt: new Date()
-                },
-                {
-                    title: 'Physics Class 12',
-                    subject: 'Physics',
-                    class: '12',
-                    description: 'Complete Physics course for Class 12',
-                    teacher: 'Dr. Ravi Kumar',
-                    youtubeUrl: 'https://www.youtube.com/playlist?list=PLqjFFrfkJcXT-lq6-v2IgxYoXK2wWHTmP',
-                    createdAt: new Date()
-                }
-            ]);
-            console.log('✅ Default courses created');
-        }
-
-        // Check if default attendance exists
-        const attendanceExists = await db.collection('attendance').countDocuments();
-        if (attendanceExists === 0) {
-            await db.collection('attendance').insertOne({
-                date: new Date(),
-                class: '11-A',
-                students: [
-                    { studentId: 'KV2023001', name: 'Aarav Sharma', status: 'present', time: '09:00 AM' },
-                    { studentId: 'KV2023002', name: 'Priya Patel', status: 'present', time: '09:01 AM' },
-                    { studentId: 'KV2023003', name: 'Rohan Kumar', status: 'absent', time: null }
-                ],
-                subject: 'Mathematics',
-                createdAt: new Date()
-            });
-            console.log('✅ Default attendance record created');
-        }
-
-        // Check if default results exist
-        const resultsExist = await db.collection('results').countDocuments();
-        if (resultsExist === 0) {
-            await db.collection('results').insertMany([
-                {
-                    studentId: 'KV2023001',
-                    studentName: 'Aarav Sharma',
-                    examType: 'Unit Test 1',
-                    subject: 'Mathematics',
-                    marks: 85,
-                    totalMarks: 100,
-                    grade: 'B',
-                    class: '11',
-                    driveLink: 'https://drive.google.com/file/d/example',
-                    createdAt: new Date()
-                },
-                {
-                    studentId: 'KV2023001',
-                    studentName: 'Aarav Sharma',
-                    examType: 'Unit Test 1',
-                    subject: 'Physics',
-                    marks: 92,
-                    totalMarks: 100,
-                    grade: 'A',
-                    class: '11',
-                    driveLink: 'https://drive.google.com/file/d/example2',
-                    createdAt: new Date()
-                }
-            ]);
-            console.log('✅ Default results created');
-        }
-
-        console.log('✅ Default data initialization completed');
     } catch (error) {
-        console.error('❌ Error initializing data:', error.message);
+        console.error('Error loading system config:', error);
     }
 };
 
-// Start the connection
-connectToMongoDB();
+// ==================== SECURITY UTILITIES ====================
 
-// Utility function to calculate grade
-const calculateGrade = (marks) => {
-    if (marks >= 90) return 'A';
-    if (marks >= 80) return 'B';
-    if (marks >= 70) return 'C';
-    if (marks >= 60) return 'D';
-    return 'F';
+// Hash password if hashing is enabled
+const hashPassword = async (password) => {
+    if (systemConfig.security.passwordHashing) {
+        return await bcrypt.hash(password, 10);
+    }
+    return password; // Return plain text if hashing disabled
 };
 
-// ===== FIXED AUTHENTICATION MIDDLEWARE =====
-const requireAuth = async (req, res, next) => {
-    const email = req.headers['x-user-email'];
-    const password = req.headers['x-user-password'];
-
-    console.log(`🔍 Auth attempt for ${req.method} ${req.path}`);
-    console.log(`📧 Email provided: ${email}`);
-    console.log(`🔐 Password provided: ${password ? '***' : 'none'}`);
-
-    if (!email || !password) {
-        console.log('❌ Missing auth headers');
-        return res.status(401).json({ 
-            error: 'Authentication required',
-            details: 'Please provide x-user-email and x-user-password headers'
-        });
+// Compare password
+const comparePassword = async (plainPassword, hashedPassword) => {
+    if (systemConfig.security.passwordHashing) {
+        return await bcrypt.compare(plainPassword, hashedPassword);
     }
+    return plainPassword === hashedPassword; // Direct comparison if no hashing
+};
 
+// Generate JWT token
+const generateToken = (user) => {
+    if (!systemConfig.security.jwtEnabled) {
+        return null;
+    }
+    
+    return jwt.sign(
+        {
+            id: user._id,
+            email: user.email,
+            role: user.role,
+            userId: user.userId || user.admissionNo || user.teacherId
+        },
+        JWT_SECRET,
+        { expiresIn: `${systemConfig.security.sessionTimeout}h` }
+    );
+};
+
+// Verify JWT token
+const verifyToken = (token) => {
+    if (!systemConfig.security.jwtEnabled) {
+        return { valid: false, error: 'JWT is disabled' };
+    }
+    
     try {
-        const user = await db.collection('users').findOne({ email, password });
+        const decoded = jwt.verify(token, JWT_SECRET);
+        return { valid: true, user: decoded };
+    } catch (error) {
+        return { valid: false, error: error.message };
+    }
+};
+
+// ==================== AUTHENTICATION MIDDLEWARE ====================
+
+const authenticateUser = async (req, res, next) => {
+    try {
+        // Check for token in headers (if JWT enabled)
+        if (systemConfig.security.jwtEnabled) {
+            const token = req.headers['x-token'] || req.headers['authorization']?.split(' ')[1];
+            
+            if (!token) {
+                return res.status(401).json({ 
+                    error: 'Authentication required',
+                    message: 'Token is required when JWT is enabled'
+                });
+            }
+            
+            const verification = verifyToken(token);
+            if (!verification.valid) {
+                return res.status(401).json({ 
+                    error: 'Invalid token',
+                    message: verification.error 
+                });
+            }
+            
+            req.user = verification.user;
+            
+            // Check if user exists and is active
+            const user = await db.collection('users').findOne({ 
+                _id: new ObjectId(req.user.id),
+                status: 'active'
+            });
+            
+            if (!user) {
+                return res.status(401).json({ error: 'User not found or inactive' });
+            }
+            
+            req.userData = user;
+            return next();
+        }
+        
+        // If JWT disabled, use email/password in headers
+        const email = req.headers['x-user-email'];
+        const password = req.headers['x-user-password'];
+        
+        if (!email || !password) {
+            return res.status(401).json({ 
+                error: 'Authentication required',
+                message: 'Please provide x-user-email and x-user-password headers'
+            });
+        }
+        
+        // Find user
+        const user = await db.collection('users').findOne({ 
+            email: email,
+            status: 'active'
+        });
         
         if (!user) {
-            console.log('❌ Invalid credentials for:', email);
-            return res.status(401).json({ 
-                error: 'Invalid credentials',
-                details: 'Email or password is incorrect'
-            });
+            return res.status(401).json({ error: 'Invalid credentials' });
         }
-
-        console.log(`✅ Auth successful for: ${user.name} (${user.role})`);
-        req.user = user;
+        
+        // Verify password
+        const passwordValid = await comparePassword(password, user.password);
+        if (!passwordValid) {
+            // Log failed attempt
+            await logLoginAttempt(email, false);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        // Log successful attempt
+        await logLoginAttempt(email, true);
+        
+        req.user = {
+            id: user._id,
+            email: user.email,
+            role: user.role,
+            name: user.name,
+            userId: user.userId || user.admissionNo || user.teacherId
+        };
+        
+        req.userData = user;
         next();
+        
     } catch (error) {
-        console.error('❌ Auth error:', error.message);
-        res.status(500).json({ 
-            error: 'Authentication failed',
-            details: error.message 
-        });
+        res.status(500).json({ error: error.message });
     }
 };
 
-// ===== HEALTH CHECK =====
-app.get('/api/health', (req, res) => {
-    const dbStatus = db ? 'connected' : 'disconnected';
+// Check permission middleware
+const checkPermission = (requiredRole) => {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+        
+        // Check if user has required role
+        if (requiredRole && req.user.role !== requiredRole) {
+            return res.status(403).json({ 
+                error: 'Access denied',
+                message: `Required role: ${requiredRole}, Your role: ${req.user.role}`
+            });
+        }
+        
+        next();
+    };
+};
+
+// Check feature enabled middleware
+const checkFeatureEnabled = (featureName) => {
+    return (req, res, next) => {
+        if (!systemConfig.features[featureName]) {
+            return res.status(403).json({ 
+                error: 'Feature disabled',
+                message: `${featureName} feature is currently disabled by administrator`
+            });
+        }
+        next();
+    };
+};
+
+// ==================== AUDIT LOGGING ====================
+
+const logAudit = async (action, details, userId, userEmail, ipAddress = '') => {
+    try {
+        await db.collection('audit_logs').insertOne({
+            action,
+            details,
+            userId,
+            userEmail,
+            userRole: (await db.collection('users').findOne({ email: userEmail }))?.role || 'unknown',
+            ipAddress,
+            timestamp: new Date()
+        });
+    } catch (error) {
+        console.error('Error logging audit:', error);
+    }
+};
+
+const logLoginAttempt = async (email, success, ipAddress = '') => {
+    try {
+        await db.collection('login_attempts').insertOne({
+            email,
+            success,
+            ipAddress,
+            timestamp: new Date()
+        });
+    } catch (error) {
+        console.error('Error logging login attempt:', error);
+    }
+};
+
+// ==================== INITIALIZE DEFAULT DATA ====================
+
+const initializeDefaultData = async () => {
+    try {
+        console.log('🔄 Initializing default data...');
+        
+        // Check if default admin exists
+        const adminExists = await db.collection('users').findOne({ email: 'admin@eduhub.com' });
+        
+        if (!adminExists) {
+            // Create default admin (super admin - can do everything)
+            const adminPassword = await hashPassword('admin123');
+            
+            const superAdmin = {
+                email: 'admin@eduhub.com',
+                password: adminPassword,
+                name: 'Super Administrator',
+                role: 'super_admin',
+                userId: 'SUPER001',
+                permissions: ['all'],
+                canViewPasswords: true,
+                canToggleFeatures: true,
+                canEditEverything: true,
+                canManageUsers: true,
+                canManageSystem: true,
+                status: 'active',
+                createdAt: new Date(),
+                lastLogin: null
+            };
+            
+            await db.collection('users').insertOne(superAdmin);
+            
+            // Also create in admins collection
+            await db.collection('admins').insertOne({
+                adminId: 'SUPER001',
+                email: 'admin@eduhub.com',
+                name: 'Super Administrator',
+                phone: '9876543210',
+                permissions: ['all'],
+                status: 'active',
+                createdAt: new Date()
+            });
+            
+            console.log('✅ Super Admin created: admin@eduhub.com / admin123');
+            
+            // Create other default roles
+            await createDefaultRoles();
+            
+            // Create default classes, subjects, etc.
+            await createDefaultAcademicData();
+            
+            console.log('✅ Default data initialization completed');
+        }
+        
+    } catch (error) {
+        console.error('Error initializing default data:', error);
+    }
+};
+
+const createDefaultRoles = async () => {
+    const defaultRoles = [
+        {
+            role: 'super_admin',
+            description: 'Super Administrator - Full system access',
+            permissions: ['all'],
+            canViewPasswords: true,
+            canToggleFeatures: true,
+            canEditEverything: true,
+            canManageUsers: true,
+            level: 1
+        },
+        {
+            role: 'admin',
+            description: 'Administrator - Full school management',
+            permissions: ['manage_students', 'manage_teachers', 'manage_exams', 'manage_fees', 'manage_library', 'view_reports'],
+            canViewPasswords: true,
+            canToggleFeatures: false,
+            canEditEverything: true,
+            canManageUsers: true,
+            level: 2
+        },
+        {
+            role: 'principal',
+            description: 'Principal - School head access',
+            permissions: ['view_all', 'manage_teachers', 'manage_exams', 'view_reports', 'approve_requests'],
+            canViewPasswords: false,
+            canToggleFeatures: false,
+            canEditEverything: false,
+            canManageUsers: false,
+            level: 3
+        },
+        {
+            role: 'examiner',
+            description: 'Examiner - Exam management access',
+            permissions: ['manage_exams', 'manage_results', 'create_tests', 'upload_question_papers', 'view_exam_reports'],
+            canViewPasswords: false,
+            canToggleFeatures: false,
+            canEditEverything: false,
+            canManageUsers: false,
+            level: 4
+        },
+        {
+            role: 'teacher',
+            description: 'Teacher - Class management access',
+            permissions: ['manage_class', 'take_attendance', 'create_assignments', 'grade_assignments', 'create_class_tests'],
+            canViewPasswords: false,
+            canToggleFeatures: false,
+            canEditEverything: false,
+            canManageUsers: false,
+            level: 5
+        },
+        {
+            role: 'librarian',
+            description: 'Librarian - Library management access',
+            permissions: ['manage_books', 'issue_books', 'manage_fines', 'view_library_reports'],
+            canViewPasswords: false,
+            canToggleFeatures: false,
+            canEditEverything: false,
+            canManageUsers: false,
+            level: 5
+        },
+        {
+            role: 'student',
+            description: 'Student - Student access',
+            permissions: ['view_attendance', 'view_results', 'submit_assignments', 'access_library', 'view_resources'],
+            canViewPasswords: false,
+            canToggleFeatures: false,
+            canEditEverything: false,
+            canManageUsers: false,
+            level: 6
+        },
+        {
+            role: 'parent',
+            description: 'Parent - Parent access',
+            permissions: ['view_child_attendance', 'view_child_results', 'pay_fees', 'receive_notifications'],
+            canViewPasswords: false,
+            canToggleFeatures: false,
+            canEditEverything: false,
+            canManageUsers: false,
+            level: 6
+        }
+    ];
     
-    res.json({ 
-        status: 'OK', 
-        message: 'EduHub Backend is running!',
-        database: dbStatus,
+    for (const role of defaultRoles) {
+        await db.collection('roles').updateOne(
+            { role: role.role },
+            { $set: role },
+            { upsert: true }
+        );
+    }
+};
+
+const createDefaultAcademicData = async () => {
+    // Create default classes (1-12)
+    for (let i = 1; i <= 12; i++) {
+        await db.collection('classes').updateOne(
+            { classNumber: i },
+            { $set: { 
+                classNumber: i,
+                className: `Class ${i}`,
+                sections: ['A', 'B', 'C', 'D'],
+                status: 'active'
+            }},
+            { upsert: true }
+        );
+    }
+    
+    // Create default subjects
+    const defaultSubjects = [
+        { code: 'ENG', name: 'English', type: 'core' },
+        { code: 'MATH', name: 'Mathematics', type: 'core' },
+        { code: 'SCI', name: 'Science', type: 'core' },
+        { code: 'SOC', name: 'Social Studies', type: 'core' },
+        { code: 'PHY', name: 'Physics', type: 'science' },
+        { code: 'CHEM', name: 'Chemistry', type: 'science' },
+        { code: 'BIO', name: 'Biology', type: 'science' },
+        { code: 'COMP', name: 'Computer Science', type: 'elective' },
+        { code: 'ECO', name: 'Economics', type: 'commerce' },
+        { code: 'ACC', name: 'Accountancy', type: 'commerce' },
+        { code: 'BUS', name: 'Business Studies', type: 'commerce' }
+    ];
+    
+    for (const subject of defaultSubjects) {
+        await db.collection('subjects').updateOne(
+            { code: subject.code },
+            { $set: subject },
+            { upsert: true }
+        );
+    }
+};
+
+// ==================== BACKUP SYSTEM ====================
+
+const createBackup = async () => {
+    if (!systemConfig.backup.enabled) return;
+    
+    try {
+        console.log('🔄 Creating database backup...');
+        
+        // Get all collections
+        const collections = await db.listCollections().toArray();
+        const backupData = {
+            timestamp: new Date(),
+            backupId: `backup_${Date.now()}`,
+            collections: {}
+        };
+        
+        // Backup each collection (limit to 1000 documents per collection for size)
+        for (const collection of collections) {
+            const data = await db.collection(collection.name)
+                .find({})
+                .limit(1000)
+                .toArray();
+            
+            backupData.collections[collection.name] = data;
+        }
+        
+        // Convert to JSON string (in production, you might want to compress this)
+        const backupJson = JSON.stringify(backupData, null, 2);
+        
+        // Generate a unique backup name
+        const backupName = `backup_${moment().format('YYYY-MM-DD_HH-mm')}.json`;
+        
+        // Store backup in database
+        await db.collection('backups').insertOne({
+            backupId: backupData.backupId,
+            name: backupName,
+            timestamp: backupData.timestamp,
+            size: Buffer.byteLength(backupJson, 'utf8'),
+            collectionCount: collections.length,
+            data: backupJson, // Storing as text in DB
+            status: 'completed'
+        });
+        
+        // Remove old backups if exceeding max
+        const allBackups = await db.collection('backups')
+            .find({})
+            .sort({ timestamp: -1 })
+            .toArray();
+        
+        if (allBackups.length > systemConfig.backup.maxBackups) {
+            const backupsToDelete = allBackups.slice(systemConfig.backup.maxBackups);
+            for (const backup of backupsToDelete) {
+                await db.collection('backups').deleteOne({ _id: backup._id });
+            }
+        }
+        
+        console.log(`✅ Backup created: ${backupName}`);
+        
+    } catch (error) {
+        console.error('Error creating backup:', error);
+    }
+};
+
+const startBackupScheduler = () => {
+    if (systemConfig.backup.autoBackup) {
+        // Run backup immediately
+        createBackup();
+        
+        // Schedule regular backups
+        const intervalHours = systemConfig.backup.interval;
+        setInterval(createBackup, intervalHours * 60 * 60 * 1000);
+        
+        console.log(`✅ Backup scheduler started (every ${intervalHours} hours)`);
+    }
+};
+
+const startCleanupScheduler = () => {
+    // Cleanup old logs every day
+    setInterval(async () => {
+        try {
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            
+            // Cleanup old audit logs
+            await db.collection('audit_logs').deleteMany({
+                timestamp: { $lt: thirtyDaysAgo }
+            });
+            
+            // Cleanup old login attempts
+            await db.collection('login_attempts').deleteMany({
+                timestamp: { $lt: thirtyDaysAgo }
+            });
+            
+        } catch (error) {
+            console.error('Error in cleanup:', error);
+        }
+    }, 24 * 60 * 60 * 1000); // Every 24 hours
+};
+
+// ==================== API ROUTES ====================
+
+// Health check
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'OK',
         timestamp: new Date().toISOString(),
-        version: '1.0.0'
+        version: '3.0.0',
+        database: db ? 'connected' : 'disconnected',
+        security: {
+            passwordHashing: systemConfig.security.passwordHashing,
+            jwtEnabled: systemConfig.security.jwtEnabled
+        },
+        features: systemConfig.features
     });
 });
 
-// ===== AUTHENTICATION ROUTES =====
-app.post('/api/auth/register', async (req, res) => {
+// ==================== AUTHENTICATION ROUTES ====================
+
+// Login endpoint
+app.post('/api/auth/login', async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected. Please try again.' });
+        const { email, password } = req.body;
+        
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password are required' });
         }
+        
+        // Find user
+        const user = await db.collection('users').findOne({ 
+            email: email,
+            status: 'active'
+        });
+        
+        if (!user) {
+            await logLoginAttempt(email, false, req.ip);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        // Verify password
+        const passwordValid = await comparePassword(password, user.password);
+        if (!passwordValid) {
+            await logLoginAttempt(email, false, req.ip);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        // Update last login
+        await db.collection('users').updateOne(
+            { _id: user._id },
+            { $set: { lastLogin: new Date() } }
+        );
+        
+        // Generate token if JWT enabled
+        let token = null;
+        if (systemConfig.security.jwtEnabled) {
+            token = generateToken(user);
+        }
+        
+        // Log successful login
+        await logLoginAttempt(email, true, req.ip);
+        await logAudit('LOGIN', `User logged in: ${email}`, user._id, email, req.ip);
+        
+        // Prepare response based on security settings
+        const response = {
+            message: 'Login successful',
+            user: {
+                id: user._id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                userId: user.userId || user.admissionNo || user.teacherId,
+                canViewPasswords: user.canViewPasswords || false,
+                permissions: user.permissions || []
+            },
+            security: {
+                jwtEnabled: systemConfig.security.jwtEnabled,
+                passwordHashing: systemConfig.security.passwordHashing
+            }
+        };
+        
+        if (token) {
+            response.token = token;
+            response.tokenExpiresIn = `${systemConfig.security.sessionTimeout}h`;
+        }
+        
+        res.json(response);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
-        const { email, password, name, role, phone, subject, classes, class: userClass, section, rollNo, parentName, parentContact, childId } = req.body;
-
-        const existingUser = await db.collection('users').findOne({ email });
+// Register new user (admin only)
+app.post('/api/auth/register', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const userData = req.body;
+        
+        // Check if user exists
+        const existingUser = await db.collection('users').findOne({ email: userData.email });
         if (existingUser) {
             return res.status(400).json({ error: 'User already exists' });
         }
-
-        const userData = {
-            email,
+        
+        // Hash password if enabled
+        const password = await hashPassword(userData.password || 'password123');
+        
+        // Create user object
+        const newUser = {
+            email: userData.email,
             password: password,
-            name,
-            role,
-            phone,
-            subject,
-            classes,
-            class: userClass,
-            section,
-            rollNo,
-            parentName,
-            parentContact,
-            childId,
-            createdAt: new Date()
+            name: userData.name,
+            role: userData.role,
+            userId: userData.userId,
+            status: 'active',
+            createdAt: new Date(),
+            lastLogin: null
         };
-
-        const result = await db.collection('users').insertOne(userData);
-        const user = await db.collection('users').findOne({ _id: result.insertedId });
-
+        
+        // Add role-specific fields
+        if (userData.role === 'student') {
+            newUser.admissionNo = userData.admissionNo;
+            newUser.class = userData.class;
+            newUser.section = userData.section;
+            newUser.rollNo = userData.rollNo;
+            
+            // Also create in students collection
+            await db.collection('students').insertOne({
+                admissionNo: userData.admissionNo,
+                email: userData.email,
+                name: userData.name,
+                class: userData.class,
+                section: userData.section,
+                rollNo: userData.rollNo,
+                status: 'active',
+                createdAt: new Date()
+            });
+            
+        } else if (userData.role === 'teacher') {
+            newUser.teacherId = userData.teacherId;
+            newUser.subject = userData.subject;
+            
+            await db.collection('teachers').insertOne({
+                teacherId: userData.teacherId,
+                email: userData.email,
+                name: userData.name,
+                subject: userData.subject,
+                status: 'active',
+                createdAt: new Date()
+            });
+            
+        } else if (userData.role === 'admin') {
+            newUser.adminId = userData.adminId;
+            newUser.permissions = userData.permissions || [];
+            
+            await db.collection('admins').insertOne({
+                adminId: userData.adminId,
+                email: userData.email,
+                name: userData.name,
+                permissions: userData.permissions,
+                status: 'active',
+                createdAt: new Date()
+            });
+        }
+        
+        // Insert user
+        const result = await db.collection('users').insertOne(newUser);
+        
+        // Log the action
+        await logAudit('USER_CREATE', `Created ${userData.role} user: ${userData.email}`, req.user.id, req.user.email, req.ip);
+        
         res.status(201).json({
             message: 'User created successfully',
-            user: {
-                _id: user._id,
-                email: user.email,
-                name: user.name,
-                role: user.role,
-                class: user.class,
-                section: user.section,
-                rollNo: user.rollNo,
-                subject: user.subject,
-                classes: user.classes,
-                childId: user.childId
-            }
+            userId: result.insertedId,
+            email: userData.email,
+            role: userData.role,
+            password: userData.password // Return plain password if no hashing
         });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+// ==================== SYSTEM MANAGEMENT ROUTES ====================
+
+// Get system configuration
+app.get('/api/system/config', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected. Please try again.' });
-        }
+        res.json(systemConfig);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
-        const { email, password } = req.body;
-
-        const user = await db.collection('users').findOne({ email, password });
-        if (!user) {
-            return res.status(400).json({ error: 'Invalid credentials' });
-        }
-
+// Update system configuration
+app.post('/api/system/config', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const updates = req.body;
+        
+        // Update in memory
+        systemConfig = { ...systemConfig, ...updates };
+        
+        // Update in database
+        await db.collection('system_config').updateOne(
+            {},
+            { $set: updates },
+            { upsert: true }
+        );
+        
+        // Log the action
+        await logAudit('SYSTEM_CONFIG_UPDATE', 'Updated system configuration', req.user.id, req.user.email, req.ip);
+        
         res.json({
-            message: 'Login successful',
-            user: {
-                _id: user._id,
-                email: user.email,
-                name: user.name,
-                role: user.role,
-                class: user.class,
-                section: user.section,
-                rollNo: user.rollNo,
-                subject: user.subject,
-                classes: user.classes,
-                childId: user.childId
-            }
+            message: 'System configuration updated',
+            config: systemConfig
         });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== DASHBOARD STATS =====
-app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
+// Toggle security features
+app.post('/api/system/toggle-security', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        // REAL DATA FROM DATABASE
-        const totalStudents = await db.collection('students').countDocuments();
-        const totalTeachers = await db.collection('teachers').countDocuments();
-        const totalCourses = await db.collection('courses').countDocuments();
+        const { feature, enabled } = req.body;
         
-        // Calculate attendance rate from real data
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        
-        const todayAttendance = await db.collection('attendance').findOne({
-            date: { $gte: today }
-        });
-        
-        let attendanceRate = '0%';
-        if (todayAttendance && todayAttendance.students) {
-            const presentCount = todayAttendance.students.filter(s => s.status === 'present').length;
-            const totalCount = todayAttendance.students.length;
-            attendanceRate = totalCount > 0 ? `${Math.round((presentCount / totalCount) * 100)}%` : '0%';
+        if (!['passwordHashing', 'jwtEnabled'].includes(feature)) {
+            return res.status(400).json({ error: 'Invalid security feature' });
         }
         
-        // Calculate pending tasks (unmarked attendance for today)
-        const pendingTasks = await db.collection('courses').countDocuments(); // Simplified
-
+        // Update configuration
+        systemConfig.security[feature] = enabled;
+        
+        await db.collection('system_config').updateOne(
+            {},
+            { $set: { [`security.${feature}`]: enabled } }
+        );
+        
+        // If disabling JWT, invalidate all tokens
+        if (feature === 'jwtEnabled' && !enabled) {
+            // You might want to add token blacklist logic here
+        }
+        
+        await logAudit('SECURITY_TOGGLE', `${feature} set to ${enabled}`, req.user.id, req.user.email, req.ip);
+        
         res.json({
-            totalStudents,
-            totalTeachers,
-            totalCourses,
-            attendanceRate,
-            pendingTasks,
-            profileCompleted: req.user.name && req.user.email ? 100 : 50
+            message: `Security feature ${feature} ${enabled ? 'enabled' : 'disabled'}`,
+            feature,
+            enabled
         });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== STUDENT ROUTES =====
-app.get('/api/students', requireAuth, async (req, res) => {
+// Toggle system features
+app.post('/api/system/toggle-feature', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
+        const { feature, enabled } = req.body;
+        
+        if (!systemConfig.features.hasOwnProperty(feature)) {
+            return res.status(400).json({ error: 'Invalid feature' });
         }
         
-        // REAL DATA FROM DATABASE
-        const students = await db.collection('students').find({}, {
+        // Update configuration
+        systemConfig.features[feature] = enabled;
+        
+        await db.collection('system_config').updateOne(
+            {},
+            { $set: { [`features.${feature}`]: enabled } }
+        );
+        
+        await logAudit('FEATURE_TOGGLE', `${feature} ${enabled ? 'enabled' : 'disabled'}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: `Feature ${feature} ${enabled ? 'enabled' : 'disabled'}`,
+            feature,
+            enabled
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get all users with passwords (admin only)
+app.get('/api/system/users-with-passwords', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const users = await db.collection('users').find({}, {
             projection: {
-                _id: 1,
-                admissionNo: 1,
-                firstName: 1,
-                lastName: 1,
                 email: 1,
-                class: 1,
-                section: 1,
-                rollNo: 1,
-                parentContact: 1,
-                parentName: 1,
-                createdAt: 1
-            }
-        }).toArray();
-        
-        res.json(students);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/students', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { firstName, lastName, class: studentClass, section, rollNo, admissionNo, email, parentName, parentContact } = req.body;
-
-        // Check if student already exists
-        const existingStudent = await db.collection('students').findOne({ 
-            $or: [
-                { email },
-                { admissionNo },
-                { class: studentClass, section, rollNo }
-            ]
-        });
-
-        if (existingStudent) {
-            return res.status(400).json({ 
-                error: 'Student already exists',
-                details: 'A student with this email, admission number, or roll number already exists'
-            });
-        }
-
-        const studentData = {
-            firstName,
-            lastName,
-            class: studentClass,
-            section,
-            rollNo,
-            admissionNo,
-            email,
-            parentName,
-            parentContact,
-            createdAt: new Date()
-        };
-
-        const result = await db.collection('students').insertOne(studentData);
-        const student = await db.collection('students').findOne({ _id: result.insertedId });
-
-        // Also create user account
-        await db.collection('users').insertOne({
-            email: email,
-            password: 'student123',
-            name: `${firstName} ${lastName}`,
-            role: 'student',
-            class: studentClass,
-            section: section,
-            rollNo: rollNo,
-            admissionNo: admissionNo,
-            parentName: parentName,
-            parentContact: parentContact,
-            studentId: result.insertedId,
-            createdAt: new Date()
-        });
-
-        res.status(201).json({ 
-            message: 'Student created successfully', 
-            student: {
-                _id: student._id,
-                firstName: student.firstName,
-                lastName: student.lastName,
-                email: student.email,
-                class: student.class,
-                section: student.section,
-                rollNo: student.rollNo,
-                admissionNo: student.admissionNo
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== TEACHER ROUTES =====
-app.get('/api/teachers', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // REAL DATA FROM DATABASE
-        const teachers = await db.collection('teachers').find({}, {
-            projection: {
-                _id: 1,
+                password: 1,
                 name: 1,
-                email: 1,
-                subject: 1,
-                classes: 1,
-                contact: 1,
-                createdAt: 1
-            }
-        }).toArray();
-        
-        res.json(teachers);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/teachers', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { name, email, subject, classes, contact } = req.body;
-
-        // Check if teacher already exists
-        const existingTeacher = await db.collection('teachers').findOne({ email });
-        if (existingTeacher) {
-            return res.status(400).json({ 
-                error: 'Teacher already exists',
-                details: 'A teacher with this email already exists'
-            });
-        }
-
-        const teacherData = {
-            name,
-            email,
-            subject,
-            classes: Array.isArray(classes) ? classes : [classes],
-            contact,
-            createdAt: new Date()
-        };
-
-        const result = await db.collection('teachers').insertOne(teacherData);
-        const teacher = await db.collection('teachers').findOne({ _id: result.insertedId });
-
-        // Also create user account
-        await db.collection('users').insertOne({
-            email: email,
-            password: 'teacher123',
-            name: name,
-            role: 'teacher',
-            subject: subject,
-            classes: Array.isArray(classes) ? classes : [classes],
-            contact: contact,
-            teacherId: result.insertedId,
-            createdAt: new Date()
-        });
-
-        res.status(201).json({ 
-            message: 'Teacher created successfully', 
-            teacher: {
-                _id: teacher._id,
-                name: teacher.name,
-                email: teacher.email,
-                subject: teacher.subject,
-                classes: teacher.classes,
-                contact: teacher.contact
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== COURSE ROUTES =====
-app.get('/api/courses', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // REAL DATA FROM DATABASE
-        const courses = await db.collection('courses').find({}, {
-            projection: {
-                _id: 1,
-                title: 1,
-                subject: 1,
-                class: 1,
-                description: 1,
-                teacher: 1,
-                youtubeUrl: 1,
-                createdAt: 1
-            }
-        }).toArray();
-        
-        res.json(courses);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/courses', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { title, subject, class: courseClass, description, teacher, youtubeUrl } = req.body;
-
-        // Check if course already exists
-        const existingCourse = await db.collection('courses').findOne({ 
-            title, 
-            class: courseClass,
-            subject 
-        });
-
-        if (existingCourse) {
-            return res.status(400).json({ 
-                error: 'Course already exists',
-                details: 'A course with this title, class, and subject already exists'
-            });
-        }
-
-        const courseData = {
-            title,
-            subject,
-            class: courseClass,
-            description,
-            teacher,
-            youtubeUrl,
-            createdAt: new Date()
-        };
-
-        const result = await db.collection('courses').insertOne(courseData);
-        const course = await db.collection('courses').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Course created successfully', 
-            course: {
-                _id: course._id,
-                title: course.title,
-                subject: course.subject,
-                class: course.class,
-                teacher: course.teacher
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== ATTENDANCE ROUTES =====
-app.get('/api/attendance', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // Get query parameters for filtering
-        const { class: className, date } = req.query;
-        let query = {};
-        
-        if (className) {
-            query.class = className;
-        }
-        
-        if (date) {
-            const startDate = new Date(date);
-            startDate.setHours(0, 0, 0, 0);
-            const endDate = new Date(date);
-            endDate.setHours(23, 59, 59, 999);
-            query.date = { $gte: startDate, $lte: endDate };
-        }
-        
-        // REAL DATA FROM DATABASE
-        const attendance = await db.collection('attendance').find(query, {
-            projection: {
-                _id: 1,
-                date: 1,
-                class: 1,
-                subject: 1,
-                students: 1,
-                createdAt: 1
-            }
-        }).sort({ date: -1 }).toArray();
-        
-        res.json(attendance);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/attendance', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { date, class: attendanceClass, subject, students } = req.body;
-
-        // Check if attendance already exists for this date, class, and subject
-        const attendanceDate = new Date(date);
-        attendanceDate.setHours(0, 0, 0, 0);
-        const endDate = new Date(date);
-        endDate.setHours(23, 59, 59, 999);
-
-        const existingAttendance = await db.collection('attendance').findOne({
-            class: attendanceClass,
-            subject: subject,
-            date: { $gte: attendanceDate, $lte: endDate }
-        });
-
-        if (existingAttendance) {
-            return res.status(400).json({ 
-                error: 'Attendance already recorded',
-                details: 'Attendance for this class and subject has already been recorded today'
-            });
-        }
-
-        const attendanceData = {
-            date: new Date(date),
-            class: attendanceClass,
-            subject: subject,
-            students: students.map(student => ({
-                studentId: student.studentId,
-                name: student.name,
-                status: student.status || 'present',
-                time: student.time || new Date().toLocaleTimeString('en-US', { hour12: true })
-            })),
-            createdBy: req.user._id,
-            createdAt: new Date()
-        };
-
-        const result = await db.collection('attendance').insertOne(attendanceData);
-        const attendance = await db.collection('attendance').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Attendance recorded successfully', 
-            attendance: {
-                _id: attendance._id,
-                date: attendance.date,
-                class: attendance.class,
-                subject: attendance.subject,
-                studentCount: attendance.students.length
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== RESULTS ROUTES =====
-app.get('/api/results', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // Get query parameters for filtering
-        const { studentId, examType, subject, class: className } = req.query;
-        let query = {};
-        
-        if (studentId) query.studentId = studentId;
-        if (examType) query.examType = examType;
-        if (subject) query.subject = subject;
-        if (className) query.class = className;
-        
-        // REAL DATA FROM DATABASE
-        const results = await db.collection('results').find(query, {
-            projection: {
-                _id: 1,
-                studentId: 1,
-                studentName: 1,
-                examType: 1,
-                subject: 1,
-                marks: 1,
-                totalMarks: 1,
-                grade: 1,
-                class: 1,
-                driveLink: 1,
-                createdAt: 1
-            }
-        }).sort({ createdAt: -1 }).toArray();
-        
-        res.json(results);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/results', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { studentId, examType, subject, marks, totalMarks, class: resultClass, driveLink } = req.body;
-
-        // Check if result already exists for this student, exam, and subject
-        const existingResult = await db.collection('results').findOne({
-            studentId,
-            examType,
-            subject
-        });
-
-        if (existingResult) {
-            return res.status(400).json({ 
-                error: 'Result already exists',
-                details: 'A result for this student, exam, and subject already exists'
-            });
-        }
-
-        const grade = calculateGrade(marks);
-
-        const resultData = {
-            studentId,
-            studentName: '', // Will be populated from students collection
-            examType,
-            subject,
-            marks: parseInt(marks),
-            totalMarks: parseInt(totalMarks),
-            grade,
-            class: resultClass,
-            driveLink,
-            createdBy: req.user._id,
-            createdAt: new Date()
-        };
-
-        // Get student name
-        const student = await db.collection('students').findOne({ admissionNo: studentId });
-        if (student) {
-            resultData.studentName = `${student.firstName} ${student.lastName}`;
-        }
-
-        const result = await db.collection('results').insertOne(resultData);
-        const newResult = await db.collection('results').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Result saved successfully', 
-            result: {
-                _id: newResult._id,
-                studentId: newResult.studentId,
-                studentName: newResult.studentName,
-                examType: newResult.examType,
-                subject: newResult.subject,
-                marks: newResult.marks,
-                totalMarks: newResult.totalMarks,
-                grade: newResult.grade
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== ANNOUNCEMENT ROUTES =====
-app.get('/api/announcements', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // Get query parameters
-        const { priority, audience } = req.query;
-        let query = {};
-        
-        if (priority) query.priority = priority;
-        if (audience) query.audience = audience;
-        
-        // REAL DATA FROM DATABASE
-        const announcements = await db.collection('announcements').find(query, {
-            projection: {
-                _id: 1,
-                title: 1,
-                content: 1,
-                audience: 1,
-                priority: 1,
-                date: 1,
-                createdBy: 1
-            }
-        }).sort({ date: -1 }).toArray();
-        
-        // Populate creator names
-        const populatedAnnouncements = await Promise.all(announcements.map(async (announcement) => {
-            if (announcement.createdBy) {
-                const creator = await db.collection('users').findOne(
-                    { _id: new ObjectId(announcement.createdBy) },
-                    { projection: { name: 1, role: 1 } }
-                );
-                return {
-                    ...announcement,
-                    createdByName: creator ? creator.name : 'Unknown',
-                    createdByRole: creator ? creator.role : 'Unknown'
-                };
-            }
-            return announcement;
-        }));
-        
-        res.json(populatedAnnouncements);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/announcements', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { title, content, audience, priority } = req.body;
-
-        const announcementData = {
-            title,
-            content,
-            audience: audience || 'all',
-            priority: priority || 'medium',
-            createdBy: req.user._id,
-            date: new Date()
-        };
-
-        const result = await db.collection('announcements').insertOne(announcementData);
-        const announcement = await db.collection('announcements').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Announcement created successfully', 
-            announcement: {
-                _id: announcement._id,
-                title: announcement.title,
-                content: announcement.content,
-                audience: announcement.audience,
-                priority: announcement.priority,
-                date: announcement.date
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== RESOURCE ROUTES =====
-app.get('/api/resources', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // Get query parameters
-        const { type, subject, class: resourceClass } = req.query;
-        let query = {};
-        
-        if (type) query.type = type;
-        if (subject) query.subject = subject;
-        if (resourceClass) query.class = resourceClass;
-        
-        // REAL DATA FROM DATABASE
-        const resources = await db.collection('resources').find(query, {
-            projection: {
-                _id: 1,
-                type: 1,
-                title: 1,
-                content: 1,
-                subject: 1,
-                class: 1,
+                role: 1,
+                status: 1,
                 createdAt: 1,
-                createdBy: 1
+                lastLogin: 1
             }
         }).sort({ createdAt: -1 }).toArray();
         
-        res.json(resources);
+        res.json(users);
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/resources', requireAuth, async (req, res) => {
+// ==================== BACKUP MANAGEMENT ROUTES ====================
+
+// Get all backups
+app.get('/api/backups', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
+        const backups = await db.collection('backups')
+            .find({})
+            .sort({ timestamp: -1 })
+            .limit(10)
+            .toArray();
+        
+        res.json(backups.map(backup => ({
+            id: backup._id,
+            backupId: backup.backupId,
+            name: backup.name,
+            timestamp: backup.timestamp,
+            size: backup.size,
+            collectionCount: backup.collectionCount,
+            status: backup.status
+        })));
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
-        const { type, title, content, subject, class: resourceClass } = req.body;
-
-        const resourceData = {
-            type,
-            title,
-            content,
-            subject,
-            class: resourceClass,
-            createdBy: req.user._id,
-            createdAt: new Date()
-        };
-
-        const result = await db.collection('resources').insertOne(resourceData);
-        const resource = await db.collection('resources').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Resource created successfully', 
-            resource: {
-                _id: resource._id,
-                type: resource.type,
-                title: resource.title,
-                subject: resource.subject,
-                class: resource.class
-            }
+// Get specific backup data
+app.get('/api/backups/:id/data', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const backup = await db.collection('backups').findOne({ 
+            _id: new ObjectId(req.params.id) 
         });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===== FLASHCARD ROUTES =====
-app.get('/api/flashcards', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
+        
+        if (!backup) {
+            return res.status(404).json({ error: 'Backup not found' });
         }
         
-        // REAL DATA FROM DATABASE - Only user's flashcards
-        const flashcards = await db.collection('flashcards').find({ createdBy: req.user._id }, {
-            projection: {
-                _id: 1,
-                question: 1,
-                answer: 1,
-                createdAt: 1
-            }
-        }).sort({ createdAt: -1 }).toArray();
+        // Parse the JSON data
+        const backupData = JSON.parse(backup.data);
         
-        res.json(flashcards);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/flashcards', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { question, answer } = req.body;
-
-        const flashcardData = {
-            question,
-            answer,
-            createdBy: req.user._id,
-            createdAt: new Date()
-        };
-
-        const result = await db.collection('flashcards').insertOne(flashcardData);
-        const flashcard = await db.collection('flashcards').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Flashcard created successfully', 
-            flashcard: {
-                _id: flashcard._id,
-                question: flashcard.question,
-                answer: flashcard.answer
-            }
+        res.json({
+            backupId: backup.backupId,
+            timestamp: backup.timestamp,
+            data: backupData
         });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== NOTE ROUTES =====
-app.get('/api/notes', requireAuth, async (req, res) => {
+// Create manual backup
+app.post('/api/backups/create', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // REAL DATA FROM DATABASE - Only user's notes
-        const notes = await db.collection('notes').find({ createdBy: req.user._id }, {
-            projection: {
-                _id: 1,
-                content: 1,
-                date: 1
-            }
-        }).sort({ date: -1 }).toArray();
-        
-        res.json(notes);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/notes', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { content } = req.body;
-
-        const noteData = {
-            content,
-            createdBy: req.user._id,
-            date: new Date()
-        };
-
-        const result = await db.collection('notes').insertOne(noteData);
-        const note = await db.collection('notes').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Note created successfully', 
-            note: {
-                _id: note._id,
-                content: note.content,
-                date: note.date
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/notes/:id', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const noteId = req.params.id;
-        
-        // Verify the note belongs to the user
-        const note = await db.collection('notes').findOne({ 
-            _id: new ObjectId(noteId),
-            createdBy: req.user._id 
-        });
-
-        if (!note) {
-            return res.status(404).json({ 
-                error: 'Note not found',
-                details: 'Note does not exist or you do not have permission to delete it'
-            });
-        }
-
-        await db.collection('notes').deleteOne({ _id: new ObjectId(noteId) });
+        await createBackup();
         
         res.json({ 
-            message: 'Note deleted successfully',
-            noteId: noteId
+            message: 'Backup created successfully',
+            timestamp: new Date()
         });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== STUDY TIME ROUTES =====
-app.get('/api/study-times', requireAuth, async (req, res) => {
+// Restore from backup
+app.post('/api/backups/:id/restore', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // REAL DATA FROM DATABASE - User's study times
-        const studyTimes = await db.collection('studytimes').find({ userId: req.user._id }, {
-            projection: {
-                _id: 1,
-                minutes: 1,
-                date: 1
-            }
-        }).sort({ date: -1 }).toArray();
-        
-        res.json(studyTimes);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/study-times', requireAuth, async (req, res) => {
-    try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-
-        const { minutes } = req.body;
-
-        const studyTimeData = {
-            userId: req.user._id,
-            minutes: parseInt(minutes),
-            date: new Date()
-        };
-
-        const result = await db.collection('studytimes').insertOne(studyTimeData);
-        const studyTime = await db.collection('studytimes').findOne({ _id: result.insertedId });
-
-        res.status(201).json({ 
-            message: 'Study time updated successfully', 
-            studyTime: {
-                _id: studyTime._id,
-                minutes: studyTime.minutes,
-                date: studyTime.date
-            }
+        const backup = await db.collection('backups').findOne({ 
+            _id: new ObjectId(req.params.id) 
         });
+        
+        if (!backup) {
+            return res.status(404).json({ error: 'Backup not found' });
+        }
+        
+        // Parse backup data
+        const backupData = JSON.parse(backup.data);
+        
+        // Clear existing data and restore
+        for (const [collectionName, documents] of Object.entries(backupData.collections)) {
+            // Drop collection
+            await db.collection(collectionName).deleteMany({});
+            
+            // Insert documents if any
+            if (documents.length > 0) {
+                await db.collection(collectionName).insertMany(documents);
+            }
+        }
+        
+        // Reload system config
+        await loadSystemConfig();
+        
+        await logAudit('BACKUP_RESTORE', `Restored from backup: ${backup.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({ 
+            message: 'Backup restored successfully',
+            backupName: backup.name
+        });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== VIDEO ROUTES =====
-app.get('/api/videos', requireAuth, async (req, res) => {
+// ==================== USER MANAGEMENT ROUTES ====================
+
+// Get all users
+app.get('/api/users', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
-        }
-        
-        // Get query parameters
-        const { courseId } = req.query;
+        const { role, status, search } = req.query;
         let query = {};
         
-        if (courseId) query.courseId = courseId;
+        if (role) query.role = role;
+        if (status) query.status = status;
+        if (search) {
+            query.$or = [
+                { email: { $regex: search, $options: 'i' } },
+                { name: { $regex: search, $options: 'i' } }
+            ];
+        }
         
-        // REAL DATA FROM DATABASE
-        const videos = await db.collection('videos').find(query, {
-            projection: {
-                _id: 1,
-                courseId: 1,
-                title: 1,
-                description: 1,
-                youtubeId: 1,
-                order: 1,
-                createdAt: 1
-            }
-        }).sort({ order: 1 }).toArray();
+        const users = await db.collection('users').find(query, {
+            projection: { password: 0 }
+        }).sort({ createdAt: -1 }).toArray();
         
-        res.json(videos);
+        res.json(users);
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/videos', requireAuth, async (req, res) => {
+// Update user
+app.put('/api/users/:id', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
+        const updates = req.body;
+        delete updates._id;
+        delete updates.password; // Use separate endpoint for password change
+        
+        const result = await db.collection('users').updateOne(
+            { _id: new ObjectId(req.params.id) },
+            { $set: { ...updates, updatedAt: new Date() } }
+        );
+        
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'User not found' });
         }
+        
+        await logAudit('USER_UPDATE', `Updated user: ${req.params.id}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({ message: 'User updated successfully' });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
-        const { courseId, title, description, youtubeId, order } = req.body;
+// Reset user password (admin can view/reset passwords)
+app.post('/api/users/:id/reset-password', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const { newPassword } = req.body;
+        
+        if (!newPassword) {
+            return res.status(400).json({ error: 'New password is required' });
+        }
+        
+        // Hash if enabled
+        const hashedPassword = await hashPassword(newPassword);
+        
+        const result = await db.collection('users').updateOne(
+            { _id: new ObjectId(req.params.id) },
+            { $set: { password: hashedPassword, updatedAt: new Date() } }
+        );
+        
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        await logAudit('PASSWORD_RESET', `Reset password for user: ${req.params.id}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({ 
+            message: 'Password reset successfully',
+            plainPassword: systemConfig.security.passwordHashing ? null : newPassword
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
-        const videoData = {
-            courseId,
-            title,
-            description,
-            youtubeId,
-            order: parseInt(order) || 0,
-            createdAt: new Date()
-        };
+// Get user's plain password (admin only)
+app.get('/api/users/:id/password', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const user = await db.collection('users').findOne(
+            { _id: new ObjectId(req.params.id) },
+            { projection: { password: 1, email: 1 } }
+        );
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // If password hashing is enabled, we can't show plain password
+        if (systemConfig.security.passwordHashing) {
+            return res.json({
+                email: user.email,
+                hashedPassword: user.password,
+                note: 'Password is hashed. Cannot display plain text.'
+            });
+        }
+        
+        res.json({
+            email: user.email,
+            plainPassword: user.password
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
-        const result = await db.collection('videos').insertOne(videoData);
-        const video = await db.collection('videos').findOne({ _id: result.insertedId });
+// ==================== ROLE MANAGEMENT ROUTES ====================
 
-        res.status(201).json({ 
-            message: 'Video added successfully', 
-            video: {
-                _id: video._id,
-                courseId: video.courseId,
-                title: video.title,
-                youtubeId: video.youtubeId,
-                order: video.order
+// Assign examiner role to teacher
+app.post('/api/roles/assign-examiner', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const { teacherId, permissions } = req.body;
+        
+        const teacher = await db.collection('teachers').findOne({ teacherId });
+        if (!teacher) {
+            return res.status(404).json({ error: 'Teacher not found' });
+        }
+        
+        // Update user role
+        await db.collection('users').updateOne(
+            { email: teacher.email },
+            { $set: { role: 'examiner' } }
+        );
+        
+        // Create examiner record
+        await db.collection('examiners').updateOne(
+            { teacherId },
+            { $set: {
+                teacherId,
+                email: teacher.email,
+                name: teacher.name,
+                permissions: permissions || ['manage_exams', 'manage_results', 'upload_question_papers'],
+                assignedBy: req.user.email,
+                assignedAt: new Date(),
+                status: 'active'
+            }},
+            { upsert: true }
+        );
+        
+        await logAudit('ROLE_ASSIGN', `Assigned examiner role to ${teacher.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'Examiner role assigned successfully',
+            teacher: {
+                teacherId,
+                name: teacher.name,
+                email: teacher.email,
+                permissions: permissions
             }
         });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== EVENT ROUTES =====
-app.get('/api/events', requireAuth, async (req, res) => {
+// Assign principal role
+app.post('/api/roles/assign-principal', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
+        const { userId, permissions } = req.body;
+        
+        const user = await db.collection('users').findOne({ 
+            $or: [
+                { _id: new ObjectId(userId) },
+                { email: userId }
+            ]
+        });
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
         }
         
-        // REAL DATA FROM DATABASE
-        const events = await db.collection('events').find({}, {
-            projection: {
-                _id: 1,
-                title: 1,
-                description: 1,
-                date: 1,
-                time: 1,
-                location: 1,
-                type: 1,
-                audience: 1,
-                createdAt: 1
+        // Update user role
+        await db.collection('users').updateOne(
+            { _id: user._id },
+            { $set: { 
+                role: 'principal',
+                permissions: permissions || ['view_all', 'manage_teachers', 'approve_requests']
+            }}
+        );
+        
+        // Create principal record
+        await db.collection('principals').updateOne(
+            { userId: user._id },
+            { $set: {
+                userId: user._id,
+                email: user.email,
+                name: user.name,
+                permissions: permissions || ['view_all', 'manage_teachers', 'approve_requests'],
+                assignedBy: req.user.email,
+                assignedAt: new Date(),
+                status: 'active'
+            }},
+            { upsert: true }
+        );
+        
+        await logAudit('ROLE_ASSIGN', `Assigned principal role to ${user.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'Principal role assigned successfully',
+            principal: {
+                name: user.name,
+                email: user.email,
+                permissions: permissions
             }
-        }).sort({ date: 1 }).toArray();
+        });
         
-        // If no events in DB, return some default ones
-        if (events.length === 0) {
-            const defaultEvents = [
-                {
-                    _id: '1',
-                    title: 'Parent-Teacher Meeting',
-                    description: 'Quarterly parent-teacher meeting',
-                    date: new Date(new Date().setDate(new Date().getDate() + 5)),
-                    time: '10:00 AM - 12:00 PM',
-                    location: 'School Auditorium',
-                    type: 'meeting',
-                    audience: 'all'
-                },
-                {
-                    _id: '2',
-                    title: 'Science Fair',
-                    description: 'Annual science fair exhibition',
-                    date: new Date(new Date().setDate(new Date().getDate() + 10)),
-                    time: '9:00 AM - 4:00 PM',
-                    location: 'Science Block',
-                    type: 'fair',
-                    audience: 'all'
-                },
-                {
-                    _id: '3',
-                    title: 'Unit Test - Mathematics',
-                    description: 'Class 11 Mathematics Unit Test',
-                    date: new Date(new Date().setDate(new Date().getDate() + 15)),
-                    time: 'Period 3 & 4',
-                    location: 'Respective Classrooms',
-                    type: 'exam',
-                    audience: 'students'
-                }
-            ];
-            return res.json(defaultEvents);
-        }
-        
-        res.json(events);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== LEADERBOARD ROUTES =====
-app.get('/api/leaderboard', requireAuth, async (req, res) => {
+// Assign librarian role
+app.post('/api/roles/assign-librarian', authenticateUser, checkPermission('super_admin'), async (req, res) => {
     try {
-        if (!db) {
-            return res.status(503).json({ error: 'Database not connected' });
+        const { userId, canManageFees = false } = req.body;
+        
+        const user = await db.collection('users').findOne({ 
+            $or: [
+                { _id: new ObjectId(userId) },
+                { email: userId }
+            ]
+        });
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
         }
         
-        // REAL DATA FROM DATABASE - Calculate leaderboard from results
-        const results = await db.collection('results').aggregate([
-            {
-                $group: {
-                    _id: '$studentId',
-                    studentName: { $first: '$studentName' },
-                    totalMarks: { $sum: '$marks' },
-                    totalExams: { $sum: 1 },
-                    averageScore: { $avg: '$marks' }
-                }
-            },
-            {
-                $lookup: {
-                    from: 'students',
-                    localField: '_id',
-                    foreignField: 'admissionNo',
-                    as: 'studentInfo'
-                }
-            },
-            {
-                $unwind: {
-                    path: '$studentInfo',
-                    preserveNullAndEmptyArrays: true
-                }
-            },
-            {
-                $project: {
-                    studentId: '$_id',
-                    name: {
-                        $cond: {
-                            if: { $eq: ['$studentName', ''] },
-                            then: { $concat: ['$studentInfo.firstName', ' ', '$studentInfo.lastName'] },
-                            else: '$studentName'
-                        }
-                    },
-                    class: '$studentInfo.class',
-                    section: '$studentInfo.section',
-                    score: { $round: ['$averageScore', 2] },
-                    totalExams: 1,
-                    totalMarks: 1
-                }
-            },
-            {
-                $sort: { score: -1 }
-            },
-            {
-                $limit: 10
+        // Update user role
+        await db.collection('users').updateOne(
+            { _id: user._id },
+            { $set: { role: 'librarian' } }
+        );
+        
+        // Create librarian record
+        await db.collection('librarians').updateOne(
+            { userId: user._id },
+            { $set: {
+                userId: user._id,
+                email: user.email,
+                name: user.name,
+                canManageFees,
+                assignedBy: req.user.email,
+                assignedAt: new Date(),
+                status: 'active'
+            }},
+            { upsert: true }
+        );
+        
+        await logAudit('ROLE_ASSIGN', `Assigned librarian role to ${user.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'Librarian role assigned successfully',
+            librarian: {
+                name: user.name,
+                email: user.email,
+                canManageFees
             }
-        ]).toArray();
+        });
         
-        // If no results, return sample data
-        if (results.length === 0) {
-            const sampleLeaderboard = [
-                { name: 'Aarav Sharma', score: 95, class: '11', section: 'A' },
-                { name: 'Priya Patel', score: 92, class: '11', section: 'B' },
-                { name: 'Rohan Kumar', score: 89, class: '12', section: 'A' },
-                { name: 'Sneha Verma', score: 87, class: '11', section: 'C' },
-                { name: 'Kunal Singh', score: 85, class: '12', section: 'B' }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== STUDENT MANAGEMENT ROUTES ====================
+
+app.get('/api/students', authenticateUser, async (req, res) => {
+    try {
+        const { class: className, section, status, search } = req.query;
+        let query = {};
+        
+        if (className) query.class = className;
+        if (section) query.section = section;
+        if (status) query.status = status;
+        if (search) {
+            query.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { admissionNo: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } }
             ];
-            return res.json(sampleLeaderboard);
         }
         
-        // Format the results
-        const leaderboard = results.map((item, index) => ({
-            rank: index + 1,
-            name: item.name,
-            score: `${item.score}%`,
-            class: `${item.class || 'N/A'}-${item.section || 'N/A'}`,
-            totalExams: item.totalExams
+        const students = await db.collection('students').find(query)
+            .sort({ class: 1, section: 1, rollNo: 1 })
+            .toArray();
+        
+        res.json(students);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/students/:id', authenticateUser, async (req, res) => {
+    try {
+        const student = await db.collection('students').findOne({ 
+            $or: [
+                { _id: new ObjectId(req.params.id) },
+                { admissionNo: req.params.id }
+            ]
+        });
+        
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        
+        // Get student's user account details (including password if admin)
+        let userDetails = null;
+        const user = await db.collection('users').findOne({ email: student.email });
+        
+        if (user && (req.user.role === 'super_admin' || req.user.role === 'admin')) {
+            userDetails = {
+                email: user.email,
+                password: user.password,
+                lastLogin: user.lastLogin,
+                status: user.status
+            };
+        }
+        
+        res.json({
+            ...student,
+            userDetails
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== EXAM MANAGEMENT ROUTES ====================
+
+// Create exam (admin/examiner)
+app.post('/api/exams', authenticateUser, checkFeatureEnabled('exams'), async (req, res) => {
+    try {
+        // Check permission
+        if (!['super_admin', 'admin', 'examiner'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const examData = req.body;
+        
+        // Generate exam code
+        const examCount = await db.collection('exams').countDocuments();
+        examData.examCode = `EXAM${(examCount + 1).toString().padStart(4, '0')}`;
+        
+        examData.createdBy = req.user.email;
+        examData.createdAt = new Date();
+        examData.status = 'scheduled';
+        
+        const result = await db.collection('exams').insertOne(examData);
+        
+        await logAudit('EXAM_CREATE', `Created exam: ${examData.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.status(201).json({
+            message: 'Exam created successfully',
+            examId: result.insertedId,
+            examCode: examData.examCode,
+            examData
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Upload results (examiner/admin)
+app.post('/api/exams/:id/results', authenticateUser, checkFeatureEnabled('results'), async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'examiner'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const { results } = req.body;
+        
+        // Validate results structure
+        if (!Array.isArray(results)) {
+            return res.status(400).json({ error: 'Results must be an array' });
+        }
+        
+        const exam = await db.collection('exams').findOne({ _id: new ObjectId(req.params.id) });
+        if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+        
+        // Process and save results
+        const processedResults = results.map(result => ({
+            examId: req.params.id,
+            examCode: exam.examCode,
+            examName: exam.name,
+            studentId: result.studentId,
+            studentName: result.studentName,
+            class: exam.class,
+            subject: exam.subject,
+            marks: result.marks,
+            totalMarks: exam.totalMarks,
+            percentage: (result.marks / exam.totalMarks) * 100,
+            grade: calculateGrade((result.marks / exam.totalMarks) * 100),
+            uploadedBy: req.user.email,
+            uploadedAt: new Date(),
+            status: 'published'
         }));
         
-        res.json(leaderboard);
+        // Insert results
+        await db.collection('exam_results').insertMany(processedResults);
+        
+        await logAudit('RESULTS_UPLOAD', `Uploaded results for exam: ${exam.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'Results uploaded successfully',
+            count: processedResults.length,
+            exam: exam.name
+        });
+        
     } catch (error) {
-        console.error('Leaderboard error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// ===== ROOT ENDPOINT =====
-app.get('/', (req, res) => {
-    const dbStatus = db ? 'connected' : 'disconnected';
-    
-    res.json({ 
-        message: 'EduHub School Management System API',
-        version: '2.0.0',
-        database: dbStatus,
-        endpoints: {
-            health: 'GET /api/health',
-            auth: ['POST /api/auth/login', 'POST /api/auth/register'],
-            dashboard: 'GET /api/dashboard/stats',
-            students: ['GET /api/students', 'POST /api/students'],
-            teachers: ['GET /api/teachers', 'POST /api/teachers'],
-            courses: ['GET /api/courses', 'POST /api/courses'],
-            attendance: ['GET /api/attendance', 'POST /api/attendance'],
-            results: ['GET /api/results', 'POST /api/results'],
-            announcements: ['GET /api/announcements', 'POST /api/announcements'],
-            resources: ['GET /api/resources', 'POST /api/resources'],
-            flashcards: ['GET /api/flashcards', 'POST /api/flashcards'],
-            notes: ['GET /api/notes', 'POST /api/notes', 'DELETE /api/notes/:id'],
-            study_times: ['GET /api/study-times', 'POST /api/study-times'],
-            videos: ['GET /api/videos', 'POST /api/videos'],
-            events: 'GET /api/events',
-            leaderboard: 'GET /api/leaderboard'
-        },
-        timestamp: new Date().toISOString()
-    });
+// Grade calculator
+const calculateGrade = (percentage) => {
+    if (percentage >= 90) return 'A+';
+    if (percentage >= 80) return 'A';
+    if (percentage >= 70) return 'B+';
+    if (percentage >= 60) return 'B';
+    if (percentage >= 50) return 'C';
+    if (percentage >= 40) return 'D';
+    if (percentage >= 33) return 'E';
+    return 'F';
+};
+
+// ==================== CLASS TEST ROUTES ====================
+
+// Create class test (teacher)
+app.post('/api/class-tests', authenticateUser, checkFeatureEnabled('classTests'), async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'teacher', 'examiner'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const testData = req.body;
+        
+        // Generate test ID
+        testData.testId = `TEST${Date.now()}`;
+        testData.createdBy = req.user.email;
+        testData.createdAt = new Date();
+        testData.status = 'active';
+        
+        await db.collection('class_tests').insertOne(testData);
+        
+        await logAudit('TEST_CREATE', `Created class test: ${testData.name}`, req.user.id, req.user.email, req.ip);
+        
+        res.status(201).json({
+            message: 'Class test created successfully',
+            testId: testData.testId,
+            testData
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-// Error handling middleware
+// Upload test results
+app.post('/api/class-tests/:id/results', authenticateUser, async (req, res) => {
+    try {
+        const { results } = req.body;
+        
+        const test = await db.collection('class_tests').findOne({ testId: req.params.id });
+        if (!test) {
+            return res.status(404).json({ error: 'Test not found' });
+        }
+        
+        const processedResults = results.map(result => ({
+            testId: req.params.id,
+            testName: test.name,
+            studentId: result.studentId,
+            studentName: result.studentName,
+            class: test.class,
+            subject: test.subject,
+            marks: result.marks,
+            totalMarks: test.totalMarks,
+            uploadedBy: req.user.email,
+            uploadedAt: new Date()
+        }));
+        
+        await db.collection('test_results').insertMany(processedResults);
+        
+        res.json({
+            message: 'Test results uploaded successfully',
+            count: processedResults.length
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== LIBRARY MANAGEMENT ROUTES ====================
+
+// Add book (librarian/admin)
+app.post('/api/library/books', authenticateUser, checkFeatureEnabled('library'), async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'librarian'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const bookData = req.body;
+        
+        // Generate book ID if not provided
+        if (!bookData.bookId) {
+            const count = await db.collection('library_books').countDocuments();
+            bookData.bookId = `BOOK${(count + 1).toString().padStart(5, '0')}`;
+        }
+        
+        bookData.addedBy = req.user.email;
+        bookData.addedAt = new Date();
+        bookData.available = bookData.totalCopies || 1;
+        bookData.status = 'available';
+        
+        // Handle cover image (URL or base64)
+        if (bookData.coverImage && bookData.coverImage.startsWith('data:image')) {
+            // Store as text (base64) or upload to cloud storage
+            // For now, we'll store as text
+            bookData.coverImageData = bookData.coverImage;
+            delete bookData.coverImage;
+        }
+        
+        await db.collection('library_books').insertOne(bookData);
+        
+        await logAudit('BOOK_ADD', `Added book: ${bookData.title}`, req.user.id, req.user.email, req.ip);
+        
+        res.status(201).json({
+            message: 'Book added successfully',
+            bookId: bookData.bookId,
+            bookData: {
+                title: bookData.title,
+                author: bookData.author,
+                isbn: bookData.isbn,
+                available: bookData.available
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Issue book to student
+app.post('/api/library/books/issue', authenticateUser, async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'librarian'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const { bookId, studentId, studentName, class: className, section, dueDate } = req.body;
+        
+        // Check book availability
+        const book = await db.collection('library_books').findOne({ bookId });
+        if (!book) {
+            return res.status(404).json({ error: 'Book not found' });
+        }
+        
+        if (book.available <= 0) {
+            return res.status(400).json({ error: 'Book not available' });
+        }
+        
+        // Create issue record
+        const issueRecord = {
+            issueId: `ISSUE${Date.now()}`,
+            bookId,
+            bookTitle: book.title,
+            bookAuthor: book.author,
+            studentId,
+            studentName,
+            class: className,
+            section,
+            issueDate: new Date(),
+            dueDate: new Date(dueDate),
+            issuedBy: req.user.email,
+            returned: false,
+            fine: 0,
+            status: 'issued'
+        };
+        
+        await db.collection('book_issues').insertOne(issueRecord);
+        
+        // Update book availability
+        await db.collection('library_books').updateOne(
+            { bookId },
+            { $inc: { available: -1 } }
+        );
+        
+        await logAudit('BOOK_ISSUE', `Issued book: ${book.title} to ${studentName}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'Book issued successfully',
+            issueId: issueRecord.issueId,
+            dueDate: issueRecord.dueDate
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Return book
+app.post('/api/library/books/return', authenticateUser, async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'librarian'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const { issueId, condition, fine = 0 } = req.body;
+        
+        const issue = await db.collection('book_issues').findOne({ issueId });
+        if (!issue) {
+            return res.status(404).json({ error: 'Issue record not found' });
+        }
+        
+        if (issue.returned) {
+            return res.status(400).json({ error: 'Book already returned' });
+        }
+        
+        // Update issue record
+        await db.collection('book_issues').updateOne(
+            { issueId },
+            { 
+                $set: {
+                    returned: true,
+                    returnDate: new Date(),
+                    returnedBy: req.user.email,
+                    condition,
+                    fine,
+                    status: 'returned'
+                }
+            }
+        );
+        
+        // Update book availability
+        await db.collection('library_books').updateOne(
+            { bookId: issue.bookId },
+            { $inc: { available: 1 } }
+        );
+        
+        await logAudit('BOOK_RETURN', `Returned book: ${issue.bookTitle}`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'Book returned successfully',
+            issueId,
+            fine
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== FEE MANAGEMENT ROUTES ====================
+
+// Update fee structure (admin/librarian)
+app.post('/api/fees/structure', authenticateUser, checkFeatureEnabled('fees'), async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'librarian'].includes(req.user.role)) {
+            // Librarian can only update library fees
+            if (req.user.role === 'librarian') {
+                const { feeType } = req.body;
+                if (!feeType || !feeType.toLowerCase().includes('library')) {
+                    return res.status(403).json({ 
+                        error: 'Librarian can only update library fees' 
+                    });
+                }
+            } else {
+                return res.status(403).json({ error: 'Permission denied' });
+            }
+        }
+        
+        const feeData = req.body;
+        
+        // Generate fee code
+        const count = await db.collection('fee_structures').countDocuments();
+        feeData.feeCode = `FEE${(count + 1).toString().padStart(5, '0')}`;
+        
+        feeData.createdBy = req.user.email;
+        feeData.createdAt = new Date();
+        feeData.status = 'active';
+        
+        await db.collection('fee_structures').insertOne(feeData);
+        
+        await logAudit('FEE_UPDATE', `Updated fee structure: ${feeData.feeType}`, req.user.id, req.user.email, req.ip);
+        
+        res.status(201).json({
+            message: 'Fee structure updated successfully',
+            feeCode: feeData.feeCode,
+            feeData
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== RESOURCE MANAGEMENT ROUTES ====================
+
+// Upload resource (teacher/admin)
+app.post('/api/resources', authenticateUser, checkFeatureEnabled('resources'), async (req, res) => {
+    try {
+        if (!['super_admin', 'admin', 'teacher', 'examiner'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        const resourceData = req.body;
+        
+        // Validate resource type
+        const allowedTypes = ['pdf', 'video', 'note', 'question_paper', 'syllabus'];
+        if (!allowedTypes.includes(resourceData.type)) {
+            return res.status(400).json({ error: 'Invalid resource type' });
+        }
+        
+        // Handle different resource types
+        switch (resourceData.type) {
+            case 'video':
+                // YouTube link or video URL
+                if (!resourceData.videoUrl) {
+                    return res.status(400).json({ error: 'Video URL is required' });
+                }
+                break;
+                
+            case 'pdf':
+            case 'note':
+                // Can be Google Drive link or direct URL
+                if (!resourceData.fileUrl) {
+                    return res.status(400).json({ error: 'File URL is required' });
+                }
+                break;
+        }
+        
+        resourceData.resourceId = `RES${Date.now()}`;
+        resourceData.uploadedBy = req.user.email;
+        resourceData.uploadedAt = new Date();
+        resourceData.status = 'active';
+        resourceData.downloads = 0;
+        resourceData.views = 0;
+        
+        await db.collection('resources').insertOne(resourceData);
+        
+        await logAudit('RESOURCE_UPLOAD', `Uploaded resource: ${resourceData.title}`, req.user.id, req.user.email, req.ip);
+        
+        res.status(201).json({
+            message: 'Resource uploaded successfully',
+            resourceId: resourceData.resourceId,
+            resourceData
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== ANALYTICS & GRAPHS ROUTES ====================
+
+// Get overall class performance
+app.get('/api/analytics/class-performance/:class', authenticateUser, async (req, res) => {
+    try {
+        const className = req.params.class;
+        
+        // Get exam results for the class
+        const results = await db.collection('exam_results').find({ 
+            class: className 
+        }).toArray();
+        
+        // Get class tests
+        const tests = await db.collection('test_results').find({
+            class: className
+        }).toArray();
+        
+        // Get attendance
+        const attendance = await db.collection('attendance_records').aggregate([
+            { $match: { class: className } },
+            { $group: {
+                _id: { studentId: '$studentId', studentName: '$studentName' },
+                totalDays: { $sum: 1 },
+                presentDays: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
+                attendancePercentage: { 
+                    $avg: { $cond: [{ $eq: ['$status', 'present'] }, 100, 0] } 
+                }
+            }},
+            { $sort: { attendancePercentage: -1 } }
+        ]).toArray();
+        
+        // Calculate statistics
+        const examStats = calculateExamStatistics(results);
+        const testStats = calculateTestStatistics(tests);
+        const attendanceStats = calculateAttendanceStatistics(attendance);
+        
+        // Create graph data
+        const graphData = {
+            examPerformance: examStats,
+            testPerformance: testStats,
+            attendanceTrend: attendanceStats,
+            topPerformers: getTopPerformers(results),
+            weakAreas: getWeakAreas(results),
+            monthlyTrend: getMonthlyTrend(results)
+        };
+        
+        res.json({
+            class: className,
+            totalStudents: attendance.length,
+            overallPerformance: {
+                examAverage: examStats.averagePercentage,
+                testAverage: testStats.averagePercentage,
+                attendanceAverage: attendanceStats.averagePercentage
+            },
+            graphData
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get student analytics
+app.get('/api/analytics/student/:id', authenticateUser, async (req, res) => {
+    try {
+        const studentId = req.params.id;
+        
+        // Get student details
+        const student = await db.collection('students').findOne({
+            $or: [
+                { _id: new ObjectId(studentId) },
+                { admissionNo: studentId }
+            ]
+        });
+        
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        
+        // Get all data for the student
+        const [examResults, testResults, attendance, assignments] = await Promise.all([
+            db.collection('exam_results').find({ studentId }).sort({ uploadedAt: -1 }).toArray(),
+            db.collection('test_results').find({ studentId }).sort({ uploadedAt: -1 }).toArray(),
+            db.collection('attendance_records').find({ studentId }).sort({ date: -1 }).limit(30).toArray(),
+            db.collection('submissions').find({ studentId }).sort({ submittedAt: -1 }).toArray()
+        ]);
+        
+        // Calculate performance
+        const performance = {
+            exams: {
+                total: examResults.length,
+                average: examResults.length > 0 ? 
+                    examResults.reduce((sum, r) => sum + r.percentage, 0) / examResults.length : 0,
+                recent: examResults.slice(0, 5)
+            },
+            tests: {
+                total: testResults.length,
+                average: testResults.length > 0 ? 
+                    testResults.reduce((sum, r) => sum + (r.marks / r.totalMarks * 100), 0) / testResults.length : 0,
+                recent: testResults.slice(0, 5)
+            },
+            attendance: {
+                totalDays: attendance.length,
+                presentDays: attendance.filter(a => a.status === 'present').length,
+                percentage: attendance.length > 0 ? 
+                    (attendance.filter(a => a.status === 'present').length / attendance.length) * 100 : 0,
+                recent: attendance.slice(0, 10)
+            }
+        };
+        
+        // Create graph data
+        const graphData = {
+            examTrend: examResults.map(r => ({
+                date: r.uploadedAt,
+                exam: r.examName,
+                percentage: r.percentage,
+                grade: r.grade
+            })),
+            subjectPerformance: calculateSubjectPerformance(examResults),
+            attendanceHistory: attendance.map(a => ({
+                date: a.date,
+                status: a.status,
+                subject: a.subject
+            }))
+        };
+        
+        res.json({
+            student: {
+                name: student.name,
+                class: student.class,
+                section: student.section,
+                admissionNo: student.admissionNo
+            },
+            performance,
+            graphData
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Helper functions for analytics
+const calculateExamStatistics = (results) => {
+    if (!results || results.length === 0) {
+        return { averagePercentage: 0, topScore: 0, lowestScore: 0, gradeDistribution: {} };
+    }
+    
+    const percentages = results.map(r => r.percentage);
+    const average = percentages.reduce((a, b) => a + b, 0) / percentages.length;
+    
+    return {
+        averagePercentage: Math.round(average * 100) / 100,
+        topScore: Math.max(...percentages),
+        lowestScore: Math.min(...percentages),
+        gradeDistribution: results.reduce((acc, r) => {
+            acc[r.grade] = (acc[r.grade] || 0) + 1;
+            return acc;
+        }, {})
+    };
+};
+
+const calculateTestStatistics = (tests) => {
+    if (!tests || tests.length === 0) {
+        return { averagePercentage: 0, topScore: 0, lowestScore: 0 };
+    }
+    
+    const percentages = tests.map(t => (t.marks / t.totalMarks) * 100);
+    const average = percentages.reduce((a, b) => a + b, 0) / percentages.length;
+    
+    return {
+        averagePercentage: Math.round(average * 100) / 100,
+        topScore: Math.max(...percentages),
+        lowestScore: Math.min(...percentages)
+    };
+};
+
+const calculateAttendanceStatistics = (attendance) => {
+    if (!attendance || attendance.length === 0) {
+        return { averagePercentage: 0, bestAttendance: 0, worstAttendance: 0 };
+    }
+    
+    const percentages = attendance.map(a => a.attendancePercentage);
+    const average = percentages.reduce((a, b) => a + b, 0) / percentages.length;
+    
+    return {
+        averagePercentage: Math.round(average * 100) / 100,
+        bestAttendance: Math.max(...percentages),
+        worstAttendance: Math.min(...percentages)
+    };
+};
+
+const getTopPerformers = (results) => {
+    const studentPerformance = results.reduce((acc, r) => {
+        if (!acc[r.studentId]) {
+            acc[r.studentId] = {
+                studentId: r.studentId,
+                studentName: r.studentName,
+                totalExams: 0,
+                totalPercentage: 0
+            };
+        }
+        acc[r.studentId].totalExams++;
+        acc[r.studentId].totalPercentage += r.percentage;
+        return acc;
+    }, {});
+    
+    return Object.values(studentPerformance)
+        .map(s => ({
+            ...s,
+            averagePercentage: s.totalPercentage / s.totalExams
+        }))
+        .sort((a, b) => b.averagePercentage - a.averagePercentage)
+        .slice(0, 10);
+};
+
+const getWeakAreas = (results) => {
+    const subjectPerformance = results.reduce((acc, r) => {
+        if (!acc[r.subject]) {
+            acc[r.subject] = {
+                subject: r.subject,
+                totalExams: 0,
+                totalPercentage: 0
+            };
+        }
+        acc[r.subject].totalExams++;
+        acc[r.subject].totalPercentage += r.percentage;
+        return acc;
+    }, {});
+    
+    return Object.values(subjectPerformance)
+        .map(s => ({
+            ...s,
+            averagePercentage: s.totalPercentage / s.totalExams
+        }))
+        .sort((a, b) => a.averagePercentage - b.averagePercentage)
+        .slice(0, 5);
+};
+
+const getMonthlyTrend = (results) => {
+    const monthlyData = results.reduce((acc, r) => {
+        const month = moment(r.uploadedAt).format('MMM YYYY');
+        if (!acc[month]) {
+            acc[month] = {
+                month,
+                totalExams: 0,
+                totalPercentage: 0
+            };
+        }
+        acc[month].totalExams++;
+        acc[month].totalPercentage += r.percentage;
+        return acc;
+    }, {});
+    
+    return Object.values(monthlyData)
+        .map(m => ({
+            ...m,
+            averagePercentage: m.totalPercentage / m.totalExams
+        }))
+        .sort((a, b) => new Date(a.month) - new Date(b.month));
+};
+
+const calculateSubjectPerformance = (results) => {
+    const subjectData = results.reduce((acc, r) => {
+        if (!acc[r.subject]) {
+            acc[r.subject] = {
+                subject: r.subject,
+                totalExams: 0,
+                totalPercentage: 0,
+                grades: {}
+            };
+        }
+        acc[r.subject].totalExams++;
+        acc[r.subject].totalPercentage += r.percentage;
+        acc[r.subject].grades[r.grade] = (acc[r.subject].grades[r.grade] || 0) + 1;
+        return acc;
+    }, {});
+    
+    return Object.values(subjectData).map(s => ({
+        ...s,
+        averagePercentage: s.totalPercentage / s.totalExams,
+        bestGrade: Object.keys(s.grades).reduce((a, b) => s.grades[a] > s.grades[b] ? a : b)
+    }));
+};
+
+// ==================== AUDIT LOGS ROUTES ====================
+
+// Get audit logs (admin only)
+app.get('/api/system/audit-logs', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const { page = 1, limit = 50, userId, action, startDate, endDate } = req.query;
+        const skip = (page - 1) * limit;
+        
+        let query = {};
+        if (userId) query.userId = userId;
+        if (action) query.action = action;
+        if (startDate || endDate) {
+            query.timestamp = {};
+            if (startDate) query.timestamp.$gte = new Date(startDate);
+            if (endDate) query.timestamp.$lte = new Date(endDate);
+        }
+        
+        const [logs, total] = await Promise.all([
+            db.collection('audit_logs').find(query)
+                .sort({ timestamp: -1 })
+                .skip(skip)
+                .limit(parseInt(limit))
+                .toArray(),
+            db.collection('audit_logs').countDocuments(query)
+        ]);
+        
+        res.json({
+            logs,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total,
+                pages: Math.ceil(total / limit)
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== DASHBOARD STATISTICS ====================
+
+app.get('/api/dashboard/stats', authenticateUser, async (req, res) => {
+    try {
+        // Get statistics based on user role
+        let stats = {};
+        
+        if (['super_admin', 'admin', 'principal'].includes(req.user.role)) {
+            // Full school statistics
+            const [
+                totalStudents, totalTeachers, totalParents,
+                totalExams, totalAssignments, totalBooks,
+                todayAttendance, pendingFees, upcomingEvents
+            ] = await Promise.all([
+                db.collection('students').countDocuments({ status: 'active' }),
+                db.collection('teachers').countDocuments({ status: 'active' }),
+                db.collection('users').countDocuments({ role: 'parent', status: 'active' }),
+                db.collection('exams').countDocuments({ status: 'scheduled' }),
+                db.collection('assignments').countDocuments({ dueDate: { $gte: new Date() } }),
+                db.collection('library_books').countDocuments(),
+                db.collection('attendance').countDocuments({ 
+                    date: { 
+                        $gte: new Date(new Date().setHours(0,0,0,0)),
+                        $lte: new Date(new Date().setHours(23,59,59,999))
+                    }
+                }),
+                db.collection('fee_payments').countDocuments({ status: 'pending' }),
+                db.collection('events').countDocuments({ 
+                    date: { $gte: new Date() },
+                    status: 'upcoming'
+                })
+            ]);
+            
+            stats = {
+                overview: {
+                    totalStudents, totalTeachers, totalParents,
+                    totalExams, totalAssignments, totalBooks
+                },
+                today: {
+                    todayAttendance, pendingFees, upcomingEvents
+                },
+                financial: {
+                    totalRevenue: await calculateTotalRevenue(),
+                    pendingAmount: await calculatePendingFees()
+                }
+            };
+            
+        } else if (req.user.role === 'teacher') {
+            // Teacher dashboard
+            const teacher = await db.collection('teachers').findOne({ email: req.user.email });
+            
+            stats = {
+                myClasses: teacher?.classes || [],
+                totalStudents: await db.collection('students').countDocuments({
+                    class: { $in: teacher?.classes || [] }
+                }),
+                pendingAssignments: await db.collection('submissions').countDocuments({
+                    graded: false,
+                    subject: teacher?.subject
+                }),
+                upcomingClasses: await getUpcomingClasses(req.user.email)
+            };
+            
+        } else if (req.user.role === 'student') {
+            // Student dashboard
+            const student = await db.collection('students').findOne({ email: req.user.email });
+            
+            stats = {
+                attendance: await getStudentAttendance(student?.admissionNo),
+                upcomingExams: await db.collection('exams').countDocuments({
+                    class: student?.class,
+                    date: { $gte: new Date() }
+                }),
+                pendingAssignments: await db.collection('assignments').countDocuments({
+                    class: student?.class,
+                    dueDate: { $gte: new Date() }
+                }),
+                libraryBooks: await db.collection('book_issues').countDocuments({
+                    studentId: student?.admissionNo,
+                    returned: false
+                })
+            };
+        }
+        
+        // Add system info
+        stats.system = {
+            security: {
+                passwordHashing: systemConfig.security.passwordHashing,
+                jwtEnabled: systemConfig.security.jwtEnabled
+            },
+            features: systemConfig.features
+        };
+        
+        res.json(stats);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Helper functions for dashboard
+const calculateTotalRevenue = async () => {
+    const result = await db.collection('fee_payments').aggregate([
+        { $match: { status: 'paid' } },
+        { $group: {
+            _id: null,
+            total: { $sum: '$amount' }
+        }}
+    ]).toArray();
+    
+    return result[0]?.total || 0;
+};
+
+const calculatePendingFees = async () => {
+    const result = await db.collection('fee_payments').aggregate([
+        { $match: { status: 'pending' } },
+        { $group: {
+            _id: null,
+            total: { $sum: '$amount' }
+        }}
+    ]).toArray();
+    
+    return result[0]?.total || 0;
+};
+
+const getUpcomingClasses = async (teacherEmail) => {
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    
+    return await db.collection('timetables').find({
+        teacher: teacherEmail,
+        day: days[dayOfWeek],
+        $or: [
+            { startTime: { $gt: moment().format('HH:mm') } },
+            { endTime: { $gt: moment().format('HH:mm') } }
+        ]
+    }).toArray();
+};
+
+const getStudentAttendance = async (studentId) => {
+    const today = new Date();
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    
+    const records = await db.collection('attendance_records').find({
+        studentId,
+        date: { $gte: startOfMonth }
+    }).toArray();
+    
+    if (records.length === 0) return { percentage: 0, present: 0, total: 0 };
+    
+    const present = records.filter(r => r.status === 'present').length;
+    return {
+        percentage: Math.round((present / records.length) * 100),
+        present,
+        total: records.length
+    };
+};
+
+// ==================== SEARCH ENDPOINT ====================
+
+app.get('/api/search', authenticateUser, async (req, res) => {
+    try {
+        const { q, type } = req.query;
+        
+        if (!q) {
+            return res.json({ results: [] });
+        }
+        
+        let results = [];
+        
+        if (type === 'student') {
+            results = await db.collection('students').find({
+                $or: [
+                    { name: { $regex: q, $options: 'i' } },
+                    { admissionNo: { $regex: q, $options: 'i' } },
+                    { email: { $regex: q, $options: 'i' } }
+                ]
+            }).limit(20).toArray();
+            
+        } else if (type === 'teacher') {
+            results = await db.collection('teachers').find({
+                $or: [
+                    { name: { $regex: q, $options: 'i' } },
+                    { teacherId: { $regex: q, $options: 'i' } },
+                    { email: { $regex: q, $options: 'i' } }
+                ]
+            }).limit(20).toArray();
+            
+        } else if (type === 'book') {
+            results = await db.collection('library_books').find({
+                $or: [
+                    { title: { $regex: q, $options: 'i' } },
+                    { author: { $regex: q, $options: 'i' } },
+                    { isbn: { $regex: q, $options: 'i' } }
+                ]
+            }).limit(20).toArray();
+            
+        } else {
+            // Global search
+            const [students, teachers, books, resources] = await Promise.all([
+                db.collection('students').find({
+                    $or: [
+                        { name: { $regex: q, $options: 'i' } },
+                        { admissionNo: { $regex: q, $options: 'i' } }
+                    ]
+                }).limit(5).toArray(),
+                
+                db.collection('teachers').find({
+                    $or: [
+                        { name: { $regex: q, $options: 'i' } },
+                        { teacherId: { $regex: q, $options: 'i' } }
+                    ]
+                }).limit(5).toArray(),
+                
+                db.collection('library_books').find({
+                    $or: [
+                        { title: { $regex: q, $options: 'i' } },
+                        { author: { $regex: q, $options: 'i' } }
+                    ]
+                }).limit(5).toArray(),
+                
+                db.collection('resources').find({
+                    $or: [
+                        { title: { $regex: q, $options: 'i' } },
+                        { description: { $regex: q, $options: 'i' } }
+                    ]
+                }).limit(5).toArray()
+            ]);
+            
+            results = [
+                ...students.map(s => ({ ...s, type: 'student' })),
+                ...teachers.map(t => ({ ...t, type: 'teacher' })),
+                ...books.map(b => ({ ...b, type: 'book' })),
+                ...resources.map(r => ({ ...r, type: 'resource' }))
+            ];
+        }
+        
+        res.json({ results });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== ERROR HANDLING ====================
+
 app.use((err, req, res, next) => {
     console.error('❌ Server Error:', err.stack);
+    
+    // Log the error
+    logAudit('SERVER_ERROR', err.message, req.user?.id || 'unknown', req.user?.email || 'unknown', req.ip);
+    
     res.status(500).json({ 
         error: 'Internal server error',
-        details: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!'
+        message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!',
+        timestamp: new Date().toISOString()
     });
 });
 
@@ -1498,15 +2517,36 @@ app.use((req, res) => {
     res.status(404).json({ 
         error: 'Endpoint not found',
         path: req.path,
-        method: req.method 
+        method: req.method,
+        availableEndpoints: [
+            '/api/health',
+            '/api/auth/login',
+            '/api/dashboard/stats',
+            '/api/system/config',
+            '/api/users',
+            '/api/students',
+            '/api/teachers',
+            '/api/exams',
+            '/api/library/books',
+            '/api/analytics/class-performance/:class',
+            '/api/search'
+        ]
     });
 });
 
-// Start Server
+// ==================== START SERVER ====================
+
+connectToMongoDB();
+
 app.listen(PORT, () => {
-    console.log(`🚀 EduHub Backend running on port ${PORT}`);
-    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`🌐 API Root: http://localhost:${PORT}/`);
-    console.log(`📈 Real data mode: ACTIVE - All endpoints return data from MongoDB`);
+    console.log(`🚀 EduHub School Management System`);
+    console.log(`📍 Port: ${PORT}`);
+    console.log(`📊 Features: ${Object.keys(systemConfig.features).filter(k => systemConfig.features[k]).length}+ enabled`);
+    console.log(`🔐 Security: ${systemConfig.security.passwordHashing ? 'Hashing ✅' : 'Hashing ❌'} | ${systemConfig.security.jwtEnabled ? 'JWT ✅' : 'JWT ❌'}`);
+    console.log(`💾 Backups: ${systemConfig.backup.enabled ? `Auto (every ${systemConfig.backup.interval}h)` : 'Manual'}`);
+    console.log(`👑 Super Admin: admin@eduhub.com / admin123`);
+    console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
 });
+
+// Export for serverless deployment
+module.exports = app;
