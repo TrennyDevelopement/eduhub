@@ -1,15 +1,13 @@
 {
   "name": "eduhub-backend",
   "version": "3.0.0",
-  "description": "EduHub School Management System Backend - Comprehensive school management with configurable security, role-based access, analytics, and backup systems",
+  "description": "EduHub School Management System Backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "prod": "NODE_ENV=production node server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "lint": "eslint server.js",
-    "format": "prettier --write server.js"
+    "build": "echo 'No build required'"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -18,183 +16,14 @@
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1"
-    "moment": "^2.29.4",
-    "dotenv": "^16.3.1",
-    "express-rate-limit": "^6.10.0",
-    "helmet": "^7.0.0",
-    "morgan": "^1.10.0",
-    "compression": "^1.7.4",
-    "express-validator": "^7.0.1",
-    "axios": "^1.6.0",
-    "uuid": "^9.0.1",
-    "winston": "^3.11.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1",
-    "eslint": "^8.53.0",
-    "prettier": "^3.0.3",
-    "jest": "^29.7.0",
-    "supertest": "^6.3.3"
+    "nodemon": "^3.0.1"
   },
-  "keywords": [
-    "school",
-    "management",
-    "education",
-    "api",
-    "student",
-    "teacher",
-    "attendance",
-    "exam",
-    "library",
-    "fee",
-    "analytics",
-    "dashboard",
-    "mongodb",
-    "express",
-    "nodejs"
-  ],
+  "keywords": ["school", "management", "education", "api"],
   "author": "Trellox/Kishore",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/trellox/eduhub-backend.git"
-  },
-  "bugs": {
-    "url": "https://github.com/trellox/eduhub-backend/issues"
-  },
-  "homepage": "https://github.com/trellox/eduhub-backend#readme",
-  "contributors": [
-    "Trellox <kishore@eduhub.com>"
-  ],
-  "private": true,
-  "funding": {
-    "type": "individual",
-    "url": "https://github.com/sponsors/trellox"
-  },
-  "files": [
-    "server.js",
-    "README.md",
-    "LICENSE",
-    "package.json",
-    "package-lock.json",
-    ".env.example",
-    "docs/"
-  ],
-  "os": [
-    "linux",
-    "darwin",
-    "win32"
-  ],
-  "cpu": [
-    "x64",
-    "arm64"
-  ],
-  "directories": {
-    "doc": "docs",
-    "example": "examples"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "config": {
-    "port": 5000,
-    "mongo_uri": "mongodb+srv://trenny:trennydev@trennydev.hieeqv2.mongodb.net/eduhub_school?retryWrites=true&w=majority",
-    "jwt_secret": "eduhub-school-management-secret-key-2024",
-    "backup_interval": "6",
-    "max_backups": "3"
-  },
-  "release": {
-    "branches": [
-      "main",
-      "develop",
-      {
-        "name": "beta",
-        "prerelease": true
-      }
-    ]
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "coveragePathIgnorePatterns": [
-      "/node_modules/"
-    ],
-    "testMatch": [
-      "**/__tests__/**/*.test.js"
-    ]
-  },
-  "eslintConfig": {
-    "env": {
-      "node": true,
-      "es2021": true
-    },
-    "extends": "eslint:recommended",
-    "parserOptions": {
-      "ecmaVersion": "latest"
-    },
-    "rules": {
-      "no-console": "off"
-    }
-  },
-  "prettier": {
-    "semi": true,
-    "trailingComma": "es5",
-    "singleQuote": false,
-    "printWidth": 100,
-    "tabWidth": 2
-  },
-  "husky": {
-    "hooks": {
-      "pre-commit": "npm run lint",
-      "pre-push": "npm test"
-    }
-  },
-  "commitlint": {
-    "extends": [
-      "@commitlint/config-conventional"
-    ]
-  },
-  "volta": {
-    "node": "18.17.1",
-    "npm": "9.6.7"
-  },
-  "funding": {
-    "type": "individual",
-    "url": "https://github.com/sponsors/trellox"
-  },
-  "keywords": [
-    "school",
-    "education",
-    "management",
-    "api",
-    "rest",
-    "mongodb",
-    "nodejs",
-    "express",
-    "dashboard",
-    "analytics",
-    "attendance",
-    "exams",
-    "library",
-    "fees",
-    "students",
-    "teachers",
-    "parents"
-  ]
+    "node": ">=18.0.0"
+  }
 }
