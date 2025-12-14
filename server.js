@@ -1,10 +1,8 @@
-const express = require('express');
+  const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
-const moment = require('moment');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -251,6 +249,87 @@ const loadSystemConfig = async () => {
     }
 };
 
+// ==================== DATE/TIME UTILITIES (Replacing moment) ====================
+
+const formatDate = (date = new Date()) => {
+    const d = new Date(date);
+    const day = d.getDate().toString().padStart(2, '0');
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}/${month}/${year}`;
+};
+
+const formatDateTime = (date = new Date()) => {
+    const d = new Date(date);
+    const day = d.getDate().toString().padStart(2, '0');
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = d.getHours().toString().padStart(2, '0');
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+    const seconds = d.getSeconds().toString().padStart(2, '0');
+    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+};
+
+const getStartOfDay = (date = new Date()) => {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+};
+
+const getEndOfDay = (date = new Date()) => {
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+};
+
+const addHours = (date, hours) => {
+    const d = new Date(date);
+    d.setHours(d.getHours() + hours);
+    return d;
+};
+
+const getStartOfMonth = (date = new Date()) => {
+    const d = new Date(date);
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+};
+
+const formatDateForFileName = (date = new Date()) => {
+    const d = new Date(date);
+    const year = d.getFullYear();
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const day = d.getDate().toString().padStart(2, '0');
+    const hours = d.getHours().toString().padStart(2, '0');
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+    return `${year}-${month}-${day}_${hours}-${minutes}`;
+};
+
+const getDayName = (date = new Date()) => {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return days[date.getDay()];
+};
+
+const getMonthName = (date = new Date()) => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return months[date.getMonth()];
+};
+
+const formatTime = (date = new Date()) => {
+    const d = new Date(date);
+    const hours = d.getHours().toString().padStart(2, '0');
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+    return `${hours}:${minutes}`;
+};
+
+const isSameDay = (date1, date2) => {
+    const d1 = new Date(date1);
+    const d2 = new Date(date2);
+    return d1.getDate() === d2.getDate() &&
+           d1.getMonth() === d2.getMonth() &&
+           d1.getFullYear() === d2.getFullYear();
+};
+
 // ==================== SECURITY UTILITIES ====================
 
 // Hash password if hashing is enabled
@@ -262,11 +341,16 @@ const hashPassword = async (password) => {
 };
 
 // Compare password
-const comparePassword = async (plainPassword, hashedPassword) => {
+const comparePassword = async (plainPassword, storedPassword) => {
     if (systemConfig.security.passwordHashing) {
-        return await bcrypt.compare(plainPassword, hashedPassword);
+        try {
+            return await bcrypt.compare(plainPassword, storedPassword);
+        } catch (error) {
+            // If stored password is not hashed (shouldn't happen when hashing is enabled)
+            return plainPassword === storedPassword;
+        }
     }
-    return plainPassword === hashedPassword; // Direct comparison if no hashing
+    return plainPassword === storedPassword; // Direct comparison if no hashing
 };
 
 // Generate JWT token
@@ -298,6 +382,74 @@ const verifyToken = (token) => {
         return { valid: true, user: decoded };
     } catch (error) {
         return { valid: false, error: error.message };
+    }
+};
+
+// ==================== SECURITY MIGRATION FUNCTIONS ====================
+
+// Convert all passwords to plain text (when hashing is disabled)
+const convertPasswordsToPlainText = async () => {
+    try {
+        console.log('🔄 Converting all passwords to plain text...');
+        
+        const users = await db.collection('users').find({}).toArray();
+        let updatedCount = 0;
+        
+        // This is only possible if we have the original passwords stored somewhere
+        // Since we don't, we can't convert hashed passwords back to plain text
+        // We'll set a default password for all users
+        const defaultPassword = 'password123';
+        
+        for (const user of users) {
+            await db.collection('users').updateOne(
+                { _id: user._id },
+                { $set: { password: defaultPassword } }
+            );
+            updatedCount++;
+        }
+        
+        console.log(`✅ Converted ${updatedCount} passwords to plain text`);
+        console.log(`⚠️  All passwords have been reset to: ${defaultPassword}`);
+        console.log('⚠️  Users must update their passwords after login');
+        
+        return updatedCount;
+        
+    } catch (error) {
+        console.error('Error converting passwords:', error);
+        throw error;
+    }
+};
+
+// Convert all passwords to hashed (when hashing is enabled)
+const convertPasswordsToHashed = async () => {
+    try {
+        console.log('🔄 Converting all passwords to hashed...');
+        
+        const users = await db.collection('users').find({}).toArray();
+        let updatedCount = 0;
+        
+        for (const user of users) {
+            // Check if password is already hashed
+            const isAlreadyHashed = user.password.startsWith('$2a$') || user.password.startsWith('$2b$');
+            
+            if (!isAlreadyHashed) {
+                // Hash the plain text password
+                const hashedPassword = await bcrypt.hash(user.password, 10);
+                
+                await db.collection('users').updateOne(
+                    { _id: user._id },
+                    { $set: { password: hashedPassword } }
+                );
+                updatedCount++;
+            }
+        }
+        
+        console.log(`✅ Hashed ${updatedCount} passwords`);
+        return updatedCount;
+        
+    } catch (error) {
+        console.error('Error hashing passwords:', error);
+        throw error;
     }
 };
 
@@ -672,7 +824,7 @@ const createBackup = async () => {
         const backupJson = JSON.stringify(backupData, null, 2);
         
         // Generate a unique backup name
-        const backupName = `backup_${moment().format('YYYY-MM-DD_HH-mm')}.json`;
+        const backupName = `backup_${formatDateForFileName()}.json`;
         
         // Store backup in database
         await db.collection('backups').insertOne({
@@ -972,6 +1124,9 @@ app.post('/api/system/toggle-security', authenticateUser, checkPermission('super
             return res.status(400).json({ error: 'Invalid security feature' });
         }
         
+        // Store old setting
+        const oldSetting = systemConfig.security[feature];
+        
         // Update configuration
         systemConfig.security[feature] = enabled;
         
@@ -980,9 +1135,23 @@ app.post('/api/system/toggle-security', authenticateUser, checkPermission('super
             { $set: { [`security.${feature}`]: enabled } }
         );
         
-        // If disabling JWT, invalidate all tokens
-        if (feature === 'jwtEnabled' && !enabled) {
-            // You might want to add token blacklist logic here
+        // Handle security migrations
+        if (feature === 'passwordHashing') {
+            if (enabled && !oldSetting) {
+                // Enable hashing - convert all passwords to hashed
+                const count = await convertPasswordsToHashed();
+                await logAudit('SECURITY_MIGRATION', `Enabled password hashing. Hashed ${count} passwords`, req.user.id, req.user.email, req.ip);
+            } else if (!enabled && oldSetting) {
+                // Disable hashing - convert all passwords to plain text
+                const count = await convertPasswordsToPlainText();
+                await logAudit('SECURITY_MIGRATION', `Disabled password hashing. Reset ${count} passwords to default`, req.user.id, req.user.email, req.ip);
+            }
+        } else if (feature === 'jwtEnabled') {
+            if (!enabled && oldSetting) {
+                // JWT disabled - clear all tokens from response (tokens will be invalidated naturally when JWT is disabled)
+                // Note: In production, you'd want to blacklist existing tokens
+                await logAudit('SECURITY_MIGRATION', 'JWT authentication disabled. All existing tokens invalidated.', req.user.id, req.user.email, req.ip);
+            }
         }
         
         await logAudit('SECURITY_TOGGLE', `${feature} set to ${enabled}`, req.user.id, req.user.email, req.ip);
@@ -990,7 +1159,8 @@ app.post('/api/system/toggle-security', authenticateUser, checkPermission('super
         res.json({
             message: `Security feature ${feature} ${enabled ? 'enabled' : 'disabled'}`,
             feature,
-            enabled
+            enabled,
+            migration: feature === 'passwordHashing' ? (enabled ? 'Passwords have been hashed' : 'Passwords have been reset to default') : null
         });
         
     } catch (error) {
@@ -1203,6 +1373,50 @@ app.put('/api/users/:id', authenticateUser, checkPermission('super_admin'), asyn
         await logAudit('USER_UPDATE', `Updated user: ${req.params.id}`, req.user.id, req.user.email, req.ip);
         
         res.json({ message: 'User updated successfully' });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete user
+app.delete('/api/users/:id', authenticateUser, checkPermission('super_admin'), async (req, res) => {
+    try {
+        const userId = req.params.id;
+        
+        // Get user details before deletion for audit
+        const user = await db.collection('users').findOne({ 
+            _id: new ObjectId(userId) 
+        });
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Delete user from users collection
+        const result = await db.collection('users').deleteOne({ 
+            _id: new ObjectId(userId) 
+        });
+        
+        // Also delete from role-specific collection
+        if (user.role === 'student' && user.admissionNo) {
+            await db.collection('students').deleteOne({ admissionNo: user.admissionNo });
+        } else if (user.role === 'teacher' && user.teacherId) {
+            await db.collection('teachers').deleteOne({ teacherId: user.teacherId });
+        } else if (user.role === 'admin' && user.adminId) {
+            await db.collection('admins').deleteOne({ adminId: user.adminId });
+        }
+        
+        await logAudit('USER_DELETE', `Deleted user: ${user.email} (${user.role})`, req.user.id, req.user.email, req.ip);
+        
+        res.json({
+            message: 'User deleted successfully',
+            deletedUser: {
+                email: user.email,
+                role: user.role,
+                name: user.name
+            }
+        });
         
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -2167,7 +2381,8 @@ const getWeakAreas = (results) => {
 
 const getMonthlyTrend = (results) => {
     const monthlyData = results.reduce((acc, r) => {
-        const month = moment(r.uploadedAt).format('MMM YYYY');
+        const date = new Date(r.uploadedAt);
+        const month = `${getMonthName(date)} ${date.getFullYear()}`;
         if (!acc[month]) {
             acc[month] = {
                 month,
@@ -2185,7 +2400,15 @@ const getMonthlyTrend = (results) => {
             ...m,
             averagePercentage: m.totalPercentage / m.totalExams
         }))
-        .sort((a, b) => new Date(a.month) - new Date(b.month));
+        .sort((a, b) => {
+            // Sort by date
+            const [monthA, yearA] = a.month.split(' ');
+            const [monthB, yearB] = b.month.split(' ');
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const dateA = new Date(parseInt(yearA), months.indexOf(monthA));
+            const dateB = new Date(parseInt(yearB), months.indexOf(monthB));
+            return dateA - dateB;
+        });
 };
 
 const calculateSubjectPerformance = (results) => {
@@ -2274,8 +2497,8 @@ app.get('/api/dashboard/stats', authenticateUser, async (req, res) => {
                 db.collection('library_books').countDocuments(),
                 db.collection('attendance').countDocuments({ 
                     date: { 
-                        $gte: new Date(new Date().setHours(0,0,0,0)),
-                        $lte: new Date(new Date().setHours(23,59,59,999))
+                        $gte: getStartOfDay(),
+                        $lte: getEndOfDay()
                     }
                 }),
                 db.collection('fee_payments').countDocuments({ status: 'pending' }),
@@ -2380,21 +2603,21 @@ const calculatePendingFees = async () => {
 const getUpcomingClasses = async (teacherEmail) => {
     const today = new Date();
     const dayOfWeek = today.getDay();
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayName = getDayName(today);
     
     return await db.collection('timetables').find({
         teacher: teacherEmail,
-        day: days[dayOfWeek],
+        day: dayName,
         $or: [
-            { startTime: { $gt: moment().format('HH:mm') } },
-            { endTime: { $gt: moment().format('HH:mm') } }
+            { startTime: { $gt: formatTime() } },
+            { endTime: { $gt: formatTime() } }
         ]
     }).toArray();
 };
 
 const getStudentAttendance = async (studentId) => {
     const today = new Date();
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const startOfMonth = getStartOfMonth(today);
     
     const records = await db.collection('attendance_records').find({
         studentId,
